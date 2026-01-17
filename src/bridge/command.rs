@@ -41,6 +41,8 @@ pub fn create_restart_nvim_command(details: &RestartDetails) -> TokioCommand {
     for arg in details.argv.iter().skip(1) {
         cmd.arg(arg);
     }
+    #[cfg(target_os = "windows")]
+    cmd.creation_flags(windows::Win32::System::Threading::CREATE_NO_WINDOW.0);
     cmd
 }
 
