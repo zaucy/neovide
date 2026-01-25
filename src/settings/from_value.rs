@@ -1,4 +1,5 @@
 use super::Value;
+use crate::frame::Frame;
 use log::error;
 
 // Trait to allow for conversion from rmpv::Value to any other data type.
@@ -8,6 +9,33 @@ pub trait ParseFromValue {
 }
 
 // FromValue implementations for most typical types
+impl ParseFromValue for Frame {
+    fn parse_from_value(&mut self, value: Value) {
+        if value.is_str() {
+            *self = match value.as_str().unwrap() {
+                "full" => Frame::Full,
+                "none" => Frame::None,
+                #[cfg(target_os = "macos")]
+                "transparent" => Frame::Transparent,
+                #[cfg(target_os = "macos")]
+                "buttonless" => Frame::Buttonless,
+                _ => {
+                    error!("Setting Frame expected one of `full`, `none`, `transparent`, `buttonless`, but received {value:?}");
+                    return;
+                }
+            };
+        } else {
+            error!("Setting Frame expected string, but received {value:?}");
+        }
+    }
+}
+
+impl From<Frame> for Value {
+    fn from(frame: Frame) -> Self {
+        Value::from(frame.to_string())
+    }
+}
+
 impl ParseFromValue for f32 {
     fn parse_from_value(&mut self, value: Value) {
         if value.is_f64() {

@@ -9,6 +9,8 @@ use winit::{
     window::{Fullscreen, Theme},
 };
 
+use crate::frame::Frame;
+
 use super::{
     KeyboardManager, MouseManager, UserEvent, WindowCommand, WindowSettings, WindowSettingsChanged,
 };
@@ -316,6 +318,47 @@ impl WinitWindowWrapper {
             #[cfg(target_os = "macos")]
             WindowSettingsChanged::MacosSimpleFullscreen(fullscreen) => {
                 self.set_simple_fullscreen(fullscreen);
+            }
+            WindowSettingsChanged::Frame(frame) => {
+                if let Some(skia_renderer) = &self.skia_renderer {
+                    skia_renderer.window().set_decorations(frame == Frame::Full);
+                }
+            }
+            WindowSettingsChanged::WindowPosX(x) => {
+                if let Some(skia_renderer) = &self.skia_renderer {
+                    let window = skia_renderer.window();
+                    let mut pos = window.outer_position().unwrap_or_default();
+                    pos.x = x;
+                    window.set_outer_position(pos);
+                }
+            }
+            WindowSettingsChanged::WindowPosY(y) => {
+                if let Some(skia_renderer) = &self.skia_renderer {
+                    let window = skia_renderer.window();
+                    let mut pos = window.outer_position().unwrap_or_default();
+                    pos.y = y;
+                    window.set_outer_position(pos);
+                }
+            }
+            WindowSettingsChanged::WindowWidth(width) => {
+                if let Some(skia_renderer) = &self.skia_renderer {
+                    if width > 0 {
+                        let window = skia_renderer.window();
+                        let current_size = window.inner_size();
+                        let new_size = dpi::PhysicalSize::new(width, current_size.height);
+                        let _ = window.request_inner_size(new_size);
+                    }
+                }
+            }
+            WindowSettingsChanged::WindowHeight(height) => {
+                if let Some(skia_renderer) = &self.skia_renderer {
+                    if height > 0 {
+                        let window = skia_renderer.window();
+                        let current_size = window.inner_size();
+                        let new_size = dpi::PhysicalSize::new(current_size.width, height);
+                        let _ = window.request_inner_size(new_size);
+                    }
+                }
             }
             _ => {}
         }

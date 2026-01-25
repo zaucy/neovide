@@ -1,6 +1,7 @@
 use rmpv::Value;
 
 use crate::error_msg;
+use crate::frame::Frame;
 use crate::settings::*;
 
 #[cfg(target_os = "macos")]
@@ -27,11 +28,15 @@ pub struct WindowSettings {
     pub remember_window_position: bool,
     pub remember_window_size: bool,
     pub scale_factor: f32,
-    pub show_border: bool,
+    pub frame: Frame,
     pub theme: ThemeSettings,
     pub touch_deadzone: f32,
     pub touch_drag_timeout: f32,
     pub window_blurred: bool,
+    pub window_pos_x: i32,
+    pub window_pos_y: i32,
+    pub window_width: u32,
+    pub window_height: u32,
 
     #[cfg(target_os = "macos")]
     pub input_macos_alt_is_meta: bool,
@@ -73,11 +78,15 @@ impl Default for WindowSettings {
             remember_window_position: true,
             remember_window_size: true,
             scale_factor: 1.0,
-            show_border: true,
+            frame: Frame::default(),
             theme: ThemeSettings::Auto,
             touch_deadzone: 6.0,
             touch_drag_timeout: 0.17,
             window_blurred: false,
+            window_pos_x: 0,
+            window_pos_y: 0,
+            window_width: 0,
+            window_height: 0,
 
             #[cfg(target_os = "macos")]
             input_macos_alt_is_meta: false,
