@@ -11,7 +11,7 @@ this behavior by adding keybindings in neovim.
 ```lua
 if vim.g.neovide then
   local function save() vim.cmd.write() end
-  local function copy() vim.api.nvim_cmd({ cmd = "yank", reg = "+" }, {}) end
+  local function copy() vim.cmd([[normal! "+y]]) end
   local function paste() vim.api.nvim_paste(vim.fn.getreg("+"), true, -1) end
 
   vim.keymap.set({ "n", "i", "v" }, "<D-s>", save, { desc = "Save" })
@@ -109,6 +109,60 @@ vim.keymap.set({ "n", "v", "o" }, "<D-[>", function()
   change_transparency(-0.01)
 end, { desc = "Decrease Neovide opacity" })
 ```
+
+## How To Enable Preedit Support Of IME?
+
+By default, the IME preedit event—that is, the preview of the text being composed—is not
+implemented. You can implement this preview yourself by using preedit_handler().
+
+Example:
+
+```lua
+local ime_context = {
+  base_col = 0,
+  base_row = 0,
+  preedit_col = 0,
+  preedit_row = 0,
+}
+
+---@param preedit_raw_text string
+---@param cursor_offset [integer, integer]: [start_col, end_col]
+preedit_handler = function(preedit_raw_text, cursor_offset)
+    vim.api.nvim_buf_set_text(
+      0,
+      ime_context.base_row - 1,
+      ime_context.base_col,
+      ime_context.preedit_row - 1,
+      ime_context.preedit_col,
+      {}
+    )
+    ime_context.preedit_col = ime_context.base_col + string.len(preedit_raw_text)
+    vim.api.nvim_buf_set_text(
+      0,
+      ime_context.base_row - 1,
+      ime_context.base_col,
+      ime_context.base_row - 1,
+      ime_context.base_col,
+      { preedit_raw_text }
+    )
+    vim.api.nvim_win_set_cursor(0, { ime_context.preedit_row, ime_context.preedit_col })
+end
+```
+
+Neovide also exposes a Lua function called commit_handler() in addition to preedit_handler(). For
+details, see [IME handling on the API page](api.html#ime-handling).
+
+If you’d prefer not to set this up yourself, you can use
+[sevenc-nanashi/neov-ime.nvim](https://github.com/sevenc-nanashi/neov-ime.nvim). Please refer to that
+repository for more information. Example: Installation with Lazy.nvim
+
+```lua
+return {
+  "sevenc-nanashi/neov-ime.nvim",
+}
+```
+
+Related: [PR #3110](https://github.com/neovide/neovide/pull/3110), [PR #3221](https://github.com/neovide/neovide/pull/3221)
 
 ## Neovide Is Not Picking Up Some Shell-configured Information
 

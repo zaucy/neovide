@@ -191,6 +191,11 @@ impl ApiInformation {
     pub fn has_event(&self, event_name: &str) -> bool {
         self.ui_events.iter().any(|event| event.name == event_name)
     }
+
+    #[allow(dead_code)]
+    pub fn has_function(&self, name: &str) -> bool {
+        self.functions.iter().any(|func| func.name == name)
+    }
 }
 
 fn parse_version(
@@ -226,7 +231,12 @@ fn parse_version(
     // NVIM v0.12.0-dev-1253+gfb2d736481
     let mut prerelease_version = 0;
     let mut prerelease_commit = String::default();
-    if let Some((_, dev, version)) = version_str.split('-').collect_tuple() {
+    if let Some((_, dev, version)) = version_str
+        .strip_suffix("-dirty")
+        .unwrap_or(version_str)
+        .split('-')
+        .collect_tuple()
+    {
         if dev == "dev" {
             if let Some((version, commit)) = version.split("+").collect_tuple() {
                 prerelease_version = version.parse().unwrap_or(0);

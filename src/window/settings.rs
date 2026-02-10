@@ -44,6 +44,8 @@ pub struct WindowSettings {
     pub input_macos_option_key_is_meta: OptionAsMeta,
     #[cfg(target_os = "macos")]
     pub macos_simple_fullscreen: bool,
+    #[cfg(target_os = "macos")]
+    pub highlight_matching_pair: bool,
     #[cfg(target_os = "windows")]
     pub title_background_color: String,
     #[cfg(target_os = "windows")]
@@ -94,6 +96,8 @@ impl Default for WindowSettings {
             input_macos_option_key_is_meta: OptionAsMeta::None,
             #[cfg(target_os = "macos")]
             macos_simple_fullscreen: false,
+            #[cfg(target_os = "macos")]
+            highlight_matching_pair: false,
             #[cfg(target_os = "windows")]
             title_background_color: "".to_string(),
             #[cfg(target_os = "windows")]

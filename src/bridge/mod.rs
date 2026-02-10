@@ -19,6 +19,7 @@ use anyhow::{bail, Context, Result};
 use futures::StreamExt;
 use itertools::Itertools;
 use log::info;
+use mundy::{Interest, Preferences};
 use nvim_rs::{error::CallError, Neovim, UiAttachOptions, Value};
 use rmpv::Utf8String;
 use tokio::{
@@ -81,7 +82,7 @@ async fn nvim_exec_output(
 }
 
 pub struct NeovimRuntime {
-    pub runtime: Runtime,
+    pub runtime: Option<Runtime>,
     clipboard: ClipboardHandle,
     handler: Option<NeovimHandler>,
     background_preference: Arc<Mutex<String>>,
@@ -167,7 +168,15 @@ async fn launch(
         settings.set::<WindowSettings>(&window_settings);
     }
 
-    start_ui_command_handler(session.neovim.clone(), settings.clone());
+    // NOTE: `api_information.has_function("nvim__exec_lua_fast")` does not return the correct
+    // result so we check the version instead.
+    let can_support_ime_api = api_information.version.has_version(0, 12, 0, Some(1724));
+
+    start_ui_command_handler(
+        session.neovim.clone(),
+        settings.clone(),
+        can_support_ime_api,
+    );
     settings.read_initial_values(&session.neovim).await?;
     set_background_if_allowed(background, &session.neovim).await;
 
@@ -175,6 +184,8 @@ async fn launch(
     options.set_linegrid_external(true);
     options.set_multigrid_external(!cmdline_settings.no_multi_grid);
     options.set_rgb(true);
+    #[cfg(target_os = "macos")]
+    options.set_hlstate_external(true);
     // We can close the handle here, as Neovim already owns it
     #[cfg(not(target_os = "windows"))]
     if let Some(fd) = session.stdin_fd.take() {
@@ -291,7 +302,7 @@ impl NeovimRuntime {
         let runtime = Builder::new_multi_thread().enable_all().build()?;
 
         Ok(Self {
-            runtime,
+            runtime: Some(runtime),
             clipboard,
             handler: None,
             background_preference: Arc::new(Mutex::new("dark".to_string())),
@@ -304,26 +315,37 @@ impl NeovimRuntime {
         grid_size: Option<GridSize<u32>>,
         running_tracker: RunningTracker,
         settings: Arc<Settings>,
-        mut colorscheme_stream: mundy::PreferencesStream,
     ) -> Result<()> {
+        let mut colorscheme_stream = self.colorscheme_stream();
         let handler = self.handler(event_loop_proxy.clone(), running_tracker, settings.clone());
         let initial_background = self
-            .runtime
+            .runtime()
             .block_on(initial_background_from_stream(&mut colorscheme_stream));
         self.set_background_preference(&initial_background);
 
-        let session = self.runtime.block_on(launch(
+        let session = match self.runtime().block_on(launch(
             handler,
             grid_size,
             settings,
             &initial_background,
             None,
-        ))?;
-        self.runtime.spawn(update_colorscheme(
+        )) {
+            Ok(session) => session,
+            Err(err) => {
+                self.runtime().block_on(async move {
+                    drop(colorscheme_stream);
+                });
+                return Err(err);
+            }
+        };
+
+        self.runtime().spawn(update_colorscheme(
             colorscheme_stream,
             self.background_preference.clone(),
         ));
-        self.runtime.spawn(run(session, event_loop_proxy));
+
+        self.runtime().spawn(run(session, event_loop_proxy));
+
         Ok(())
     }
 
@@ -341,7 +363,7 @@ impl NeovimRuntime {
             .clone();
 
         let background = self.current_background();
-        let session = self.runtime.block_on(launch(
+        let session = self.runtime().block_on(launch(
             handler,
             Some(grid_size),
             settings,
@@ -349,9 +371,21 @@ impl NeovimRuntime {
             Some(&restart_details),
         ))?;
 
-        self.runtime.spawn(run(session, event_loop_proxy));
+        self.runtime().spawn(run(session, event_loop_proxy));
 
         Ok(())
+    }
+
+    fn runtime(&self) -> &Runtime {
+        self.runtime
+            .as_ref()
+            .expect("runtime must be available while NeovimRuntime is alive")
+    }
+
+    pub fn shutdown_timeout(&mut self, timeout: Duration) {
+        if let Some(runtime) = self.runtime.take() {
+            runtime.shutdown_timeout(timeout);
+        }
     }
 
     fn handler(
@@ -372,6 +406,11 @@ impl NeovimRuntime {
         })
     }
 
+    pub fn colorscheme_stream(&self) -> mundy::PreferencesStream {
+        let _guard = self.runtime().enter();
+        Preferences::stream(Interest::ColorScheme)
+    }
+
     fn set_background_preference(&self, background: &str) {
         if let Ok(mut guard) = self.background_preference.lock() {
             guard.clear();
@@ -384,5 +423,15 @@ impl NeovimRuntime {
             .lock()
             .map(|guard| guard.clone())
             .unwrap_or_else(|_| "dark".to_string())
+    }
+}
+
+impl Drop for NeovimRuntime {
+    fn drop(&mut self) {
+        // on the happy path it is redundant but intentionally defensive.
+        // application Drop is the normal path and this one is the fallback
+        // for safety unexpected teardow paths. It's also not double down
+        // since the application shutdown consumes the inner tokio runtime
+        self.shutdown_timeout(Duration::from_millis(500));
     }
 }
