@@ -37,6 +37,7 @@ pub struct WindowSettings {
     pub window_pos_y: i32,
     pub window_width: u32,
     pub window_height: u32,
+    pub message_area_drag_selection: bool,
 
     #[cfg(target_os = "macos")]
     pub input_macos_alt_is_meta: bool,
@@ -89,6 +90,7 @@ impl Default for WindowSettings {
             window_pos_y: 0,
             window_width: 0,
             window_height: 0,
+            message_area_drag_selection: true,
 
             #[cfg(target_os = "macos")]
             input_macos_alt_is_meta: false,

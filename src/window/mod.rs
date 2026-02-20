@@ -57,6 +57,7 @@ use crate::{
 pub use application::Application;
 pub use application::ShouldRender;
 pub use error_window::show_error_window;
+pub use mouse_manager::{MessageSelectionEvent, MouseEventResult, OverlayEvent};
 pub use settings::{ThemeSettings, WindowSettings, WindowSettingsChanged};
 pub use window_wrapper::WinitWindowWrapper;
 
@@ -234,7 +235,7 @@ pub fn create_window(
 
     #[cfg(target_os = "macos")]
     let mut window_attributes = match frame_decoration {
-        Frame::Full => window_attributes,
+        Frame::Full => window_attributes.with_title_hidden(title_hidden),
         Frame::None => window_attributes.with_decorations(false),
         Frame::Buttonless => window_attributes
             .with_title_hidden(title_hidden)

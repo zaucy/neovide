@@ -911,6 +911,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "aa9a19cbb55df58761df49b23516a86d432839add4af60fc256da840f66ed35b"
 
 [[package]]
+name = "fork"
+version = "0.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "30268f1eefccc9d72f43692e8b89e659aeb52e84016c3b32b6e7e9f1c8f38f94"
+dependencies = [
+ "libc",
+]
+
+[[package]]
 name = "fsevent-sys"
 version = "4.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1590,6 +1599,7 @@ dependencies = [
  "derive-new",
  "dirs",
  "flexi_logger",
+ "fork",
  "futures 0.3.31",
  "gl",
  "glamour",
@@ -2163,6 +2173,18 @@ dependencies = [
  "objc2-symbols",
  "objc2-uniform-type-identifiers",
  "objc2-user-notifications",
+]
+
+[[package]]
+name = "objc2-ui-kit"
+version = "0.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d87d638e33c06f577498cbcc50491496a3ed4246998a7fbba7ccb98b1e7eab22"
+dependencies = [
+ "bitflags 2.10.0",
+ "objc2 0.6.3",
+ "objc2-foundation 0.3.2",
+ "objc2-quartz-core 0.3.2",
 ]
 
 [[package]]
@@ -2829,9 +2851,9 @@ checksum = "56199f7ddabf13fe5074ce809e7d3f42b42ae711800501b5b16ea82ad029c39d"
 
 [[package]]
 name = "skia-bindings"
-version = "0.91.0"
+version = "0.93.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c2dd9bbd87993cbe4c0caa5fa6ca69c7d2ed38dcf5cd967b200392840c3bc666"
+checksum = "cbb363ec9c62e2b0f48c7f62f1cb53ede1a4fcaec4640205197e27e8bfad07d2"
 dependencies = [
  "bindgen",
  "cc",
@@ -2846,11 +2868,18 @@ dependencies = [
 
 [[package]]
 name = "skia-safe"
-version = "0.91.1"
+version = "0.93.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2c13e5913d17403753fd8cc2c15402e8d9ba8278d1b82a12aa7264a63f9c6325"
+checksum = "f5b1e4737fcde38a2bbe414ba4fbdaaec9e925f13642e4a81941225d399b007c"
 dependencies = [
  "bitflags 2.10.0",
+ "objc2 0.6.3",
+ "objc2-app-kit 0.3.2",
+ "objc2-core-foundation",
+ "objc2-metal 0.3.2",
+ "objc2-quartz-core 0.3.2",
+ "objc2-ui-kit 0.3.2",
+ "raw-window-handle",
  "skia-bindings",
  "windows",
 ]
@@ -4020,7 +4049,7 @@ dependencies = [
  "objc2 0.5.2",
  "objc2-app-kit 0.2.2",
  "objc2-foundation 0.2.2",
- "objc2-ui-kit",
+ "objc2-ui-kit 0.2.2",
  "orbclient",
  "percent-encoding",
  "pin-project",
