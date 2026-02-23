@@ -37,6 +37,7 @@ pub struct WindowSettings {
     pub window_pos_y: i32,
     pub window_width: u32,
     pub window_height: u32,
+    pub message_area_drag_selection: bool,
 
     #[cfg(target_os = "macos")]
     pub input_macos_alt_is_meta: bool,
@@ -44,6 +45,8 @@ pub struct WindowSettings {
     pub input_macos_option_key_is_meta: OptionAsMeta,
     #[cfg(target_os = "macos")]
     pub macos_simple_fullscreen: bool,
+    #[cfg(target_os = "macos")]
+    pub highlight_matching_pair: bool,
     #[cfg(target_os = "windows")]
     pub title_background_color: String,
     #[cfg(target_os = "windows")]
@@ -87,6 +90,7 @@ impl Default for WindowSettings {
             window_pos_y: 0,
             window_width: 0,
             window_height: 0,
+            message_area_drag_selection: true,
 
             #[cfg(target_os = "macos")]
             input_macos_alt_is_meta: false,
@@ -94,6 +98,8 @@ impl Default for WindowSettings {
             input_macos_option_key_is_meta: OptionAsMeta::None,
             #[cfg(target_os = "macos")]
             macos_simple_fullscreen: false,
+            #[cfg(target_os = "macos")]
+            highlight_matching_pair: false,
             #[cfg(target_os = "windows")]
             title_background_color: "".to_string(),
             #[cfg(target_os = "windows")]

@@ -84,7 +84,7 @@ struct RestartRequest {
     grid_size: GridSize<u32>,
 }
 
-pub struct UpdateLoop {
+pub struct Application {
     idle: bool,
     previous_frame_start: Instant,
     last_dt: f32,
@@ -106,7 +106,7 @@ pub struct UpdateLoop {
     pending_restart: Option<RestartRequest>,
 }
 
-impl UpdateLoop {
+impl Application {
     pub fn new(
         initial_window_size: WindowSize,
         initial_config: Config,
@@ -128,8 +128,13 @@ impl UpdateLoop {
         let cmd_line_settings = settings.get::<CmdLineSettings>();
         let idle = cmd_line_settings.idle;
 
-        let window_wrapper =
-            WinitWindowWrapper::new(initial_window_size, initial_config, settings.clone());
+        let clipboard_handle = clipboard::ClipboardHandle::new(&clipboard);
+        let window_wrapper = WinitWindowWrapper::new(
+            initial_window_size,
+            initial_config,
+            settings.clone(),
+            clipboard_handle,
+        );
 
         Self {
             idle,
@@ -394,24 +399,24 @@ impl UpdateLoop {
         // safely. see https://github.com/neovide/neovide/issues/3311
         self.clipboard.take();
 
-        if let Some(runtime) = self.runtime.take() {
+        if let Some(mut runtime) = self.runtime.take() {
             // Wait a little bit more and force Neovim to exit after that.
             // This should not be required, but Neovim through libuv spawns child processes that inherit all the handles.
             // This means that the stdio and stderr handles are not properly closed, so the nvim-rs
             // read will hang forever, waiting for more data to read.
             // See https://github.com/neovide/neovide/issues/2182 (which includes links to libuv issues)
-            runtime.runtime.shutdown_timeout(Duration::from_millis(500));
+            runtime.shutdown_timeout(Duration::from_millis(500));
         }
     }
 }
 
-impl Drop for UpdateLoop {
+impl Drop for Application {
     fn drop(&mut self) {
         self.teardown();
     }
 }
 
-impl ApplicationHandler<UserEvent> for UpdateLoop {
+impl ApplicationHandler<UserEvent> for Application {
     fn window_event(
         &mut self,
         event_loop: &ActiveEventLoop,

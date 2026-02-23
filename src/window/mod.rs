@@ -1,8 +1,8 @@
+mod application;
 mod error_window;
 mod keyboard_manager;
 mod mouse_manager;
 mod settings;
-mod update_loop;
 mod window_wrapper;
 
 #[cfg(target_os = "macos")]
@@ -54,10 +54,11 @@ use crate::{
     units::GridSize,
     utils::expand_tilde,
 };
+pub use application::Application;
+pub use application::ShouldRender;
 pub use error_window::show_error_window;
+pub use mouse_manager::{MessageSelectionEvent, MouseEventResult, OverlayEvent};
 pub use settings::{ThemeSettings, WindowSettings, WindowSettingsChanged};
-pub use update_loop::ShouldRender;
-pub use update_loop::UpdateLoop;
 pub use window_wrapper::WinitWindowWrapper;
 
 static DEFAULT_ICON: &[u8] = include_bytes!("../../assets/neovide.ico");
@@ -115,6 +116,13 @@ pub enum WindowCommand {
         entity: String,
         guifont: String,
         kind: ForceClickKind,
+    },
+    #[cfg(target_os = "macos")]
+    HighlightMatchingPair {
+        grid: u64,
+        row: u64,
+        column: u64,
+        text: Option<String>,
     },
     Minimize,
     ThemeChanged(Option<Theme>),
@@ -227,7 +235,7 @@ pub fn create_window(
 
     #[cfg(target_os = "macos")]
     let mut window_attributes = match frame_decoration {
-        Frame::Full => window_attributes,
+        Frame::Full => window_attributes.with_title_hidden(title_hidden),
         Frame::None => window_attributes.with_decorations(false),
         Frame::Buttonless => window_attributes
             .with_title_hidden(title_hidden)

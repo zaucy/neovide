@@ -167,6 +167,33 @@ a gamma of 0.8 and a contrast of 0.1.
 Note a gamma of 0.0, means standard sRGB gamma or 2.2. Also note that these settings don't
 necessarily apply immediately due to caching of the fonts.
 
+#### Pixel geometry
+
+VimScript:
+
+```vim
+let g:neovide_pixel_geometry = "RGBH"
+let g:neovide_pixel_geometry = "RGBH"
+```
+
+Lua:
+
+```lua
+vim.g.neovide_pixel_geometry = "RGBH"
+vim.g.neovide_pixel_geometry = "RGBH"
+```
+
+**Nightly.**
+
+Required for the guifont option `#e-subpixelantialias` to work. Defaults to "Unknown".
+
+Represents the physical location of the red, green, and blue light-emitting elements of your
+monitor. Possible options are "RGBH" (red on the left, green in the middle, and blue on the right,
+layed out horizontally), "BGRH" (horizontal, but flipped), "RGBV" (red on top, blue on bottom),
+"BGRV" (blue on top, red on bottom), and "Unknown" (effectively disables subpixel antialiasing).
+
+Most monitors are RGBH. If your monitor is rotated, it's probably something else.
+
 #### Padding
 
 VimScript:
@@ -461,6 +488,25 @@ By setting this to `v:true`, the mouse will be hidden as soon as you start typin
 only affects the mouse if it is currently within the bounds of the neovide window. Moving the
 mouse makes it visible again.
 
+#### Mouse drag selection in message area
+
+VimScript:
+
+```vim
+let g:neovide_message_area_drag_selection = v:false
+```
+
+Lua:
+
+```lua
+vim.g.neovide_message_area_drag_selection = false
+```
+
+**Nightly.**
+
+Set this to `v:false` to disable drag selection in Neovide message windows, for example
+`:messages` or shell command output. This is enabled by default.
+
 #### Underline automatic scaling
 
 VimScript:
@@ -739,6 +785,25 @@ default when Neovim properly sends the UI busy events and the hack is no longer 
 some cases the hack itself is buggy and prevents the cursor from moving to the command line when it
 should. In that case you can try to disable it, especially if you are not using cursor animations
 and the flickering does not bother as much.
+
+#### Highlight Matching Pair (macOS only)
+
+VimScript:
+
+```vim
+let g:neovide_highlight_matching_pair = v:true
+```
+
+Lua:
+
+```lua
+vim.g.neovide_highlight_matching_pair = true
+```
+
+**Nightly.**
+
+When enabled, Neovide highlights the matching pair using the system find indicator. The
+default is `false`.
 
 ### Input Settings
 

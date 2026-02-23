@@ -46,8 +46,11 @@ pub fn config_path() -> PathBuf {
 pub struct Config {
     pub font: Option<FontSettings>,
     pub box_drawing: Option<BoxDrawingSettings>,
+    pub server: Option<String>,
     pub fork: Option<bool>,
     pub frame: Option<Frame>,
+    pub size: Option<String>,
+    pub grid: Option<String>,
     pub idle: Option<bool>,
     pub maximized: Option<bool>,
     pub neovim_bin: Option<PathBuf>,
@@ -61,6 +64,10 @@ pub struct Config {
     pub backtraces_path: Option<PathBuf>,
     pub icon: Option<String>,
     pub chdir: Option<PathBuf>,
+    pub opengl: Option<bool>,
+    pub wayland_app_id: Option<String>,
+    pub x11_wm_class: Option<String>,
+    pub x11_wm_class_instance: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -87,6 +94,9 @@ impl Config {
     }
 
     fn write_to_env(&self) {
+        if let Some(server) = &self.server {
+            env::set_var("NEOVIDE_SERVER", server);
+        }
         if let Some(wsl) = self.wsl {
             env::set_var("NEOVIDE_WSL", wsl.to_string());
         }
@@ -105,11 +115,20 @@ impl Config {
         if let Some(fork) = self.fork {
             env::set_var("NEOVIDE_FORK", fork.to_string());
         }
+        if let Some(opengl) = self.opengl {
+            env::set_var("NEOVIDE_OPENGL", opengl.to_string());
+        }
         if let Some(idle) = self.idle {
             env::set_var("NEOVIDE_IDLE", idle.to_string());
         }
         if let Some(frame) = self.frame {
             env::set_var("NEOVIDE_FRAME", frame.to_string());
+        }
+        if let Some(size) = &self.size {
+            env::set_var("NEOVIDE_SIZE", size);
+        }
+        if let Some(grid) = &self.grid {
+            env::set_var("NEOVIDE_GRID", grid);
         }
         if let Some(neovim_bin) = &self.neovim_bin {
             env::set_var("NEOVIM_BIN", neovim_bin.to_string_lossy().to_string());
@@ -125,6 +144,15 @@ impl Config {
         }
         if let Some(icon) = &self.icon {
             env::set_var("NEOVIDE_ICON", icon);
+        }
+        if let Some(wayland_app_id) = &self.wayland_app_id {
+            env::set_var("NEOVIDE_APP_ID", wayland_app_id);
+        }
+        if let Some(x11_wm_class) = &self.x11_wm_class {
+            env::set_var("NEOVIDE_WM_CLASS", x11_wm_class);
+        }
+        if let Some(x11_wm_class_instance) = &self.x11_wm_class_instance {
+            env::set_var("NEOVIDE_WM_CLASS_INSTANCE", x11_wm_class_instance);
         }
         if let Some(chdir) = &self.chdir {
             env::set_var("NEOVIDE_CHDIR", chdir.to_string_lossy().to_string());
@@ -155,26 +183,25 @@ impl Config {
 }
 
 fn watcher_thread(init_config: Config, event_loop_proxy: EventLoopProxy<UserEvent>) {
+    let config_path = config_path();
+    let parent_path = match config_path.parent() {
+        Some(dir) => dir,
+        None => return,
+    };
+
     let (tx, rx) = mpsc::channel();
     let mut debouncer = new_debouncer(Duration::from_millis(500), None, tx).unwrap();
 
     if let Err(e) = debouncer.watch(
         // watching the directory rather than the config file itself to also allow it to be deleted/created later on
-        config_path()
-            .parent()
-            .expect("config path to point to a file which must be in some directory"),
+        parent_path,
         RecursiveMode::NonRecursive,
     ) {
-        log::error!("Could not watch config file, chances are it just doesn't exist: {e}");
+        log::warn!("Error while trying to watch config file parent directory for changes: {e}");
         return;
     }
 
     let mut previous_config = init_config;
-    // XXX: compiler can't really know that the config_path() function result basically cannot change
-    // if that turns out to be a problem for someone, please open an issue and describe why you're modifying
-    // the env variables of processes on the fly
-    let config_path = config_path();
-
     loop {
         if let Err(e) = rx.recv() {
             eprintln!("Error while watching config file: {e}");
