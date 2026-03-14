@@ -1,6 +1,6 @@
 use std::{
-    sync::mpsc::{channel, Sender},
-    thread::{spawn, JoinHandle},
+    sync::mpsc::{Sender, channel},
+    thread::{JoinHandle, spawn},
 };
 
 use windows::Win32::Foundation::HANDLE;
@@ -8,7 +8,10 @@ use windows::Win32::System::Threading::WaitForSingleObjectEx;
 
 use winit::event_loop::EventLoopProxy;
 
-use crate::{profiling::tracy_zone, window::UserEvent};
+use crate::{
+    profiling::tracy_zone,
+    window::{EventPayload, UserEvent},
+};
 
 enum Message {
     RequestRedraw,
@@ -28,10 +31,8 @@ pub struct VSyncWinSwapChain {
 }
 
 impl VSyncWinSwapChain {
-    pub fn new(proxy: EventLoopProxy<UserEvent>, swap_chain_waitable: HANDLE) -> Self {
-        let handle = SwapChainHandle {
-            handle: swap_chain_waitable,
-        };
+    pub fn new(proxy: EventLoopProxy<EventPayload>, swap_chain_waitable: HANDLE) -> Self {
+        let handle = SwapChainHandle { handle: swap_chain_waitable };
         let (sender, receiver) = channel();
         let vsync_thread = spawn(move || {
             // Removing this asignment causes a build failure complaining that
@@ -43,13 +44,10 @@ impl VSyncWinSwapChain {
                 unsafe {
                     WaitForSingleObjectEx(handle.handle, 1000, true);
                 }
-                proxy.send_event(UserEvent::RedrawRequested).ok();
+                proxy.send_event(EventPayload::all(UserEvent::RedrawRequested)).ok();
             }
         });
-        Self {
-            vsync_thread: Some(vsync_thread),
-            sender,
-        }
+        Self { vsync_thread: Some(vsync_thread), sender }
     }
 
     pub fn wait_for_vsync(&mut self) {}

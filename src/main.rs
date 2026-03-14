@@ -39,9 +39,9 @@ extern crate derive_new;
 
 use std::{
     env::{self, args},
-    fs::{create_dir_all, File, OpenOptions},
+    fs::{File, OpenOptions, create_dir_all},
     io::Write,
-    panic::set_hook,
+    path::PathBuf,
     process::ExitCode,
     sync::Arc,
     time::SystemTime,
@@ -49,33 +49,29 @@ use std::{
 
 use anyhow::Result;
 use log::trace;
-use std::env::var;
-use std::panic::PanicHookInfo;
-use std::path::PathBuf;
-use time::macros::format_description;
-use time::OffsetDateTime;
+use std::panic::{PanicHookInfo, set_hook};
+use time::{OffsetDateTime, macros::format_description};
 use winit::{error::EventLoopError, event_loop::EventLoopProxy};
 
 #[cfg(not(test))]
 use flexi_logger::{Cleanup, Criterion, Duplicate, FileSpec, Logger, Naming};
 
 use backtrace::Backtrace;
-use bridge::NeovimRuntime;
 use cmd_line::CmdLineSettings;
 use error_handling::handle_startup_errors;
 use renderer::{
-    cursor_renderer::CursorSettings, progress_bar::ProgressBarSettings, RendererSettings,
+    RendererSettings, cursor_renderer::CursorSettings, progress_bar::ProgressBarSettings,
 };
-use running_tracker::RunningTracker;
 use window::{
-    create_event_loop, determine_window_size, Application, UserEvent, WindowSettings, WindowSize,
+    Application, EventPayload, WindowSettings, create_event_loop, determine_grid_size,
+    determine_window_size,
 };
 
 pub use channel_utils::*;
 #[cfg(target_os = "windows")]
 pub use windows_utils::*;
 
-use crate::settings::{load_last_window_settings, Config, PersistentWindowSettings, Settings};
+use crate::settings::{Config, Settings, load_last_window_settings};
 
 pub use profiling::startup_profiler;
 
@@ -85,6 +81,8 @@ use crate::frame::Frame;
 const DEFAULT_BACKTRACES_FILE: &str = "neovide_backtraces.log";
 const BACKTRACES_FILE_ENV_VAR: &str = "NEOVIDE_BACKTRACES";
 const REQUEST_MESSAGE: &str = "This is a bug and we would love for it to be reported to https://github.com/neovide/neovide/issues";
+#[cfg(not(target_os = "windows"))]
+const FORKED_FROM_TTY_ENV_VAR: &str = "NEOVIDE_FORKED_FROM_TTY";
 
 fn main() -> ExitCode {
     set_hook(Box::new(|panic_info| {
@@ -107,44 +105,46 @@ fn main() -> ExitCode {
 
     let event_loop = create_event_loop();
     let clipboard = clipboard::Clipboard::new(&event_loop);
-    let running_tracker = RunningTracker::new();
-    let settings = Arc::new(Settings::new());
     let clipboard_handle = clipboard::ClipboardHandle::new(&clipboard);
+    let settings = Arc::new(Settings::new());
+    let setup_proxy = event_loop.create_proxy();
+    let config = match setup(setup_proxy, settings.clone()) {
+        Ok(config) => config,
+        Err(err) => return handle_startup_errors(err, event_loop, settings.clone(), clipboard),
+    };
 
-    match setup(
+    // Set BgColor by default when using a transparent frame, so the titlebar text gets correct
+    // color.
+    #[cfg(target_os = "macos")]
+    if settings.get::<CmdLineSettings>().frame == Frame::Transparent {
+        let mut window_settings = settings.get::<WindowSettings>();
+        window_settings.theme = window::ThemeSettings::BgColor;
+        settings.set(&window_settings);
+    }
+
+    let window_settings = load_last_window_settings().ok();
+    let window_size = determine_window_size(window_settings.as_ref(), &settings);
+    let grid_size = determine_grid_size(&window_size, window_settings);
+
+    let mut application = Application::new(
+        window_size,
+        grid_size,
+        config.font,
         event_loop.create_proxy(),
-        running_tracker.clone(),
         settings.clone(),
-        clipboard_handle.clone(),
-    ) {
-        Err(err) => handle_startup_errors(err, event_loop, settings.clone(), clipboard),
-        Ok((window_size, initial_config, runtime)) => {
-            let mut application = Application::new(
-                window_size,
-                initial_config,
-                event_loop.create_proxy(),
-                settings.clone(),
-                runtime,
-                clipboard,
-            );
+        clipboard,
+        clipboard_handle,
+    );
 
-            let result = event_loop.run_app(&mut application);
-
-            match result {
-                Ok(_) => running_tracker.exit_code(),
-                Err(EventLoopError::ExitFailure(code)) => ExitCode::from(code as u8),
-                _ => ExitCode::FAILURE,
-            }
-        }
+    let result = application.run(event_loop);
+    match result {
+        Ok(_) => application.runtime_tracker.exit_code(),
+        Err(EventLoopError::ExitFailure(code)) => ExitCode::from(code as u8),
+        _ => ExitCode::FAILURE,
     }
 }
 
-fn setup(
-    proxy: EventLoopProxy<UserEvent>,
-    running_tracker: RunningTracker,
-    settings: Arc<Settings>,
-    clipboard: clipboard::ClipboardHandle,
-) -> Result<(WindowSize, Config, NeovimRuntime)> {
+fn setup(proxy: EventLoopProxy<EventPayload>, settings: Arc<Settings>) -> Result<Config> {
     //  --------------
     // | Architecture |
     //  --------------
@@ -250,34 +250,9 @@ fn setup(
     #[cfg(not(test))]
     init_logger(&settings);
 
-    trace!("Neovide version: {}", crate_version!());
+    trace!("Neovide version: {}", env!("NEOVIDE_BUILD_VERSION"));
 
-    // Set BgColor by default when using a transparent frame, so the titlebar text gets correct
-    // color.
-    #[cfg(target_os = "macos")]
-    if settings.get::<CmdLineSettings>().frame == Frame::Transparent {
-        let mut window_settings = settings.get::<WindowSettings>();
-        window_settings.theme = window::ThemeSettings::BgColor;
-        settings.set(&window_settings);
-    }
-
-    let window_settings = load_last_window_settings().ok();
-    let window_size = determine_window_size(window_settings.as_ref(), &settings);
-    let grid_size = match window_size {
-        WindowSize::Grid(grid_size) => Some(grid_size),
-        // Clippy wrongly suggests to use unwrap or default here
-        #[allow(clippy::manual_unwrap_or_default)]
-        _ => match window_settings {
-            Some(PersistentWindowSettings::Maximized { grid_size, .. }) => grid_size,
-            Some(PersistentWindowSettings::Windowed { grid_size, .. }) => grid_size,
-            _ => None,
-        },
-    };
-
-    let mut runtime = NeovimRuntime::new(clipboard)?;
-    runtime.launch(proxy, grid_size, running_tracker, settings, &config)?;
-
-    Ok((window_size, config, runtime))
+    Ok(config)
 }
 
 #[cfg(not(test))]
@@ -288,11 +263,7 @@ pub fn init_logger(settings: &Settings) {
         Logger::try_with_env_or_str("neovide")
             .expect("Could not init logger")
             .log_to_file(FileSpec::default())
-            .rotate(
-                Criterion::Size(10_000_000),
-                Naming::Timestamps,
-                Cleanup::KeepLogFiles(1),
-            )
+            .rotate(Criterion::Size(10_000_000), Naming::Timestamps, Cleanup::KeepLogFiles(1))
             .duplicate_to_stderr(Duplicate::Error)
     } else {
         Logger::try_with_env_or_str("neovide = error").expect("Could not init logger")
@@ -316,16 +287,19 @@ fn maybe_disown(settings: &Settings) {
         Ok(fork::Fork::Parent(_)) => process::exit(0),
         Ok(fork::Fork::Child) => {
             if let Ok(current_exe) = env::current_exe() {
-                assert!(process::Command::new(current_exe)
+                let mut command = process::Command::new(current_exe);
+                command
                     .stdin(process::Stdio::null())
                     .stdout(process::Stdio::null())
                     .stderr(process::Stdio::null())
-                    .args(env::args().skip(1))
-                    .spawn()
-                    .is_ok());
+                    .args(env::args().skip(1));
+                command.env(FORKED_FROM_TTY_ENV_VAR, "1");
+                assert!(command.spawn().is_ok());
                 process::exit(0);
             } else {
-                eprintln!("error in disowning process, cannot obtain the path for the current executable, exiting...");
+                eprintln!(
+                    "error in disowning process, cannot obtain the respawn context, exiting..."
+                );
                 process::exit(1);
             }
         }
@@ -362,7 +336,7 @@ fn log_panic_to_file(panic_info: &PanicHookInfo, backtrace: &Backtrace, path: &O
 
     let file_path = match path {
         Some(v) => v,
-        None => &match var(BACKTRACES_FILE_ENV_VAR) {
+        None => &match env::var(BACKTRACES_FILE_ENV_VAR) {
             Ok(v) => PathBuf::from(v),
             Err(_) => settings::neovide_std_datapath().join(DEFAULT_BACKTRACES_FILE),
         },
@@ -394,9 +368,7 @@ fn generate_panic_log_message(panic_info: &PanicHookInfo, backtrace: &Backtrace)
     let system_time: OffsetDateTime = SystemTime::now().into();
 
     let timestamp = system_time
-        .format(format_description!(
-            "[year]-[month]-[day] [hour]:[minute]:[second]"
-        ))
+        .format(format_description!("[year]-[month]-[day] [hour]:[minute]:[second]"))
         .expect("Failed to parse current time");
 
     let partial_panic_msg = generate_panic_message(panic_info);
@@ -425,5 +397,7 @@ fn generate_panic_message(panic_info: &PanicHookInfo) -> String {
         None => return "Could not parse panic payload to a string. This is a bug.".to_owned(),
     };
 
-    format!("Neovide panicked with the message '{payload}'. (File: {file}; Line: {line}, Column: {column})")
+    format!(
+        "Neovide panicked with the message '{payload}'. (File: {file}; Line: {line}, Column: {column})"
+    )
 }

@@ -882,6 +882,71 @@ vim.api.nvim_create_autocmd({ "CmdlineEnter", "CmdlineLeave" }, {
 })
 ```
 
+#### macOS Multi-window (Editors)
+
+**Available on Nightly.**
+
+Neovide can show multiple windows on macOS either as separate OS windows or as native tabs inside a
+single host window.
+
+Set `macos-native-tabs = true` to merge windows into a tab group. The native tab bar stays hidden
+until more than one tab exists to keep a clean single-window look.
+
+Use Window > New Window (cmd+n) or the Dock menu to open another Neovide window. If native tabs
+are enabled, new windows become tabs in the host window.
+
+If you have native tabs enabled, the Window menu shows an Editors entry and the Editors hotkey
+becomes available. You can also remap the in-app tab cycling shortcuts.
+
+#### macOS Global Activation Shortcuts
+
+Neovide registers system-wide shortcuts on macOS:
+
+- **Pinned** <kbd>⌘</kbd> + <kbd>⌃</kbd> + <kbd>Z</kbd> toggles the most recently used Neovide
+  window. If that window is already active, the shortcut hides it; otherwise it brings the window
+  to the front.
+- **Editors** <kbd>⌘</kbd> + <kbd>⌃</kbd> + <kbd>N</kbd> opens the Editors (tab overview) view so
+  you can pick another Neovide window. This shortcut is only available when
+  `macos-native-tabs = true` and if only one window exists, it behaves the same as the pinned
+  shortcut.
+
+Customize them by setting the environment variables:
+
+```bash
+launchctl setenv NEOVIDE_MACOS_PINNED_HOTKEY "ctrl+shift+z"
+launchctl setenv NEOVIDE_MACOS_SWITCHER_HOTKEY "ctrl+shift+n"
+```
+
+Use `cmd`, `ctrl`, `alt`, and `shift` for modifiers and a single character for the key.
+
+To disable a shortcut entirely, set the corresponding variable to `false` or leave it empty.
+
+If a shortcut does not work, it may conflict with another global shortcut or be rejected by the
+system. Check the Neovide log for warnings.
+
+You can also configure them inside `config.toml`:
+
+```toml
+macos-pinned-hotkey = "ctrl+shift+z"
+macos-switcher-hotkey = "ctrl+shift+n"
+```
+
+When `macos-native-tabs` is enabled, you can also customize the in-app tab navigation shortcuts:
+
+```toml
+macos-tab-prev-hotkey = "cmd+shift+["
+macos-tab-next-hotkey = "cmd+shift+]"
+```
+
+These work only while Neovide is focused so the keypress never reaches Neovim, mirroring the native
+macOS tab cycling workflow.
+
+Set either value to `false` (or an empty value) to disable that shortcut and pass the keypress
+through to Neovim.
+
+macOS may prompt you to grant Neovide Accessibility/Input Monitoring permissions the first time you
+use this feature so the shortcut can be detected outside the app.
+
 #### Touch Deadzone
 
 VimScript:
@@ -1081,6 +1146,25 @@ vim.g.neovide_cursor_smooth_blink = false
 If enabled, the cursor will smoothly animate the transition between the cursor's on and off state.
 The built in `guicursor` neovim option needs to be configured to enable blinking by having a value
 set for both `blinkoff`, `blinkon` and `blinkwait` for this setting to apply.
+
+#### Use covered cell colors for cursor fallback
+
+VimScript:
+
+```vim
+let g:neovide_cursor_cell_color_fallback = v:false
+```
+
+Lua:
+
+```lua
+vim.g.neovide_cursor_cell_color_fallback = false
+```
+
+If enabled, Neovide will use the resolved colors of the grid cell under the cursor when the
+`guicursor` highlight does not explicitly define cursor foreground or background colors. This makes
+the block cursor adapt to the text highlighting beneath it. Explicit cursor colors still take
+precedence.
 
 ### Cursor Particles
 

@@ -1,6 +1,6 @@
 use log::error;
 use nvim_rs::Value;
-use skia_safe::{paint::Style, BlendMode, Canvas, Color, Paint, Rect};
+use skia_safe::{BlendMode, Canvas, Color, Paint, Rect, paint::Style};
 
 use crate::{
     editor::Cursor,
@@ -14,6 +14,7 @@ pub trait CursorVfx {
     fn update(
         &mut self,
         settings: &CursorSettings,
+        base_color: Color,
         current_cursor_destination: PixelPos<f32>,
         cursor_dimensions: PixelSize<f32>,
         immediate_movement: bool,
@@ -147,11 +148,7 @@ pub struct PointHighlight {
 
 impl PointHighlight {
     pub fn new(mode: &HighlightMode) -> PointHighlight {
-        PointHighlight {
-            t: 0.0,
-            center_position: PixelPos::new(0.0, 0.0),
-            mode: mode.clone(),
-        }
+        PointHighlight { t: 0.0, center_position: PixelPos::new(0.0, 0.0), mode: mode.clone() }
     }
 }
 
@@ -159,6 +156,7 @@ impl CursorVfx for PointHighlight {
     fn update(
         &mut self,
         settings: &CursorSettings,
+        _base_color: Color,
         current_cursor_destination: PixelPos<f32>,
         _cursor_dimensions: PixelSize<f32>,
         _immediate_movement: bool,
@@ -197,7 +195,7 @@ impl CursorVfx for PointHighlight {
         paint.set_blend_mode(BlendMode::SrcOver);
 
         let colors = &grid_renderer.default_style.colors;
-        let base_color: Color = cursor.background(colors).to_color();
+        let base_color: Color = cursor.background(colors, settings.cell_color_fallback).to_color();
         let alpha = ease(ease_in_quad, settings.vfx_opacity, 0.0, self.t) as u8;
         let color = Color::from_argb(alpha, base_color.r(), base_color.g(), base_color.b());
 
@@ -238,6 +236,7 @@ struct ParticleData {
     speed: PixelVec<f32>,
     rotation_speed: f32,
     lifetime: f32,
+    color: Color,
 }
 
 pub struct ParticleTrail {
@@ -265,13 +264,9 @@ impl ParticleTrail {
         speed: PixelVec<f32>,
         rotation_speed: f32,
         lifetime: f32,
+        color: Color,
     ) {
-        self.particles.push(ParticleData {
-            pos,
-            speed,
-            rotation_speed,
-            lifetime,
-        });
+        self.particles.push(ParticleData { pos, speed, rotation_speed, lifetime, color });
     }
 
     // Note this method doesn't keep particles in order
@@ -285,6 +280,7 @@ impl CursorVfx for ParticleTrail {
     fn update(
         &mut self,
         settings: &CursorSettings,
+        base_color: Color,
         current_cursor_dest: PixelPos<f32>,
         cursor_dimensions: PixelSize<f32>,
         immediate_movement: bool,
@@ -373,6 +369,7 @@ impl CursorVfx for ParticleTrail {
                         speed,
                         rotation_speed,
                         t * settings.vfx_particle_lifetime,
+                        base_color,
                     );
                 }
             }
@@ -395,7 +392,7 @@ impl CursorVfx for ParticleTrail {
         settings: &CursorSettings,
         canvas: &Canvas,
         grid_renderer: &mut GridRenderer,
-        cursor: &Cursor,
+        _cursor: &Cursor,
     ) {
         let mut paint = Paint::new(skia_safe::colors::WHITE, None);
         let font_dimensions = GridSize::new(1.0, 1.0) * grid_renderer.grid_scale;
@@ -407,15 +404,13 @@ impl CursorVfx for ParticleTrail {
             _ => {}
         }
 
-        let colors = &grid_renderer.default_style.colors;
-        let base_color: Color = cursor.background(colors).to_color();
-
         paint.set_blend_mode(BlendMode::SrcOver);
 
         self.particles.iter().for_each(|particle| {
             let lifetime = particle.lifetime / settings.vfx_particle_lifetime;
             let alpha = (lifetime * settings.vfx_opacity) as u8;
-            let color = Color::from_argb(alpha, base_color.r(), base_color.g(), base_color.b());
+            let color =
+                Color::from_argb(alpha, particle.color.r(), particle.color.g(), particle.color.b());
             paint.set_color(color);
 
             let radius = match self.trail_mode {
@@ -446,19 +441,14 @@ struct RngState {
 
 impl RngState {
     fn new() -> RngState {
-        RngState {
-            state: 0x853C_49E6_748F_EA9Bu64,
-            inc: (0xDA3E_39CB_94B9_5BDBu64 << 1) | 1,
-        }
+        RngState { state: 0x853C_49E6_748F_EA9Bu64, inc: (0xDA3E_39CB_94B9_5BDBu64 << 1) | 1 }
     }
     fn next(&mut self) -> u32 {
         let old_state = self.state;
 
         // Implementation copied from:
         // https://rust-random.github.io/rand/src/rand_pcg/pcg64.rs.html#103
-        let new_state = old_state
-            .wrapping_mul(6_364_136_223_846_793_005u64)
-            .wrapping_add(self.inc);
+        let new_state = old_state.wrapping_mul(6_364_136_223_846_793_005u64).wrapping_add(self.inc);
 
         self.state = new_state;
 

@@ -1,18 +1,16 @@
 mod application;
 mod error_window;
 mod keyboard_manager;
+#[cfg(target_os = "macos")]
+pub mod macos;
 mod mouse_manager;
 mod settings;
 mod window_wrapper;
 
-#[cfg(target_os = "macos")]
-use crate::platform::macos;
-#[cfg(target_os = "macos")]
-use crate::platform::macos::register_file_handler;
-
 #[cfg(target_os = "linux")]
 use std::env;
 
+use glamour::Size2;
 use winit::{
     dpi::{PhysicalSize, Size},
     event::DeviceId,
@@ -36,45 +34,37 @@ use winit::platform::windows::WindowAttributesExtWindows;
 #[cfg(target_os = "macos")]
 use winit::platform::macos::EventLoopBuilderExtMacOS;
 
-use image::{load_from_memory, GenericImageView, Pixel};
+use image::{GenericImageView, Pixel, load_from_memory};
 use keyboard_manager::KeyboardManager;
 use mouse_manager::MouseManager;
 use std::fs::File;
 use std::io::Read;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::{
     bridge::RestartDetails,
     cmd_line::{CmdLineSettings, GeometryArgs},
     frame::Frame,
-    renderer::{build_window_config, DrawCommand, WindowConfig},
+    renderer::{DrawCommand, WindowConfig, build_window_config},
     settings::{
-        clamped_grid_size, load_last_window_settings, save_window_size, HotReloadConfigs,
-        PersistentWindowSettings, Settings, SettingsChanged,
+        HotReloadConfigs, PersistentWindowSettings, Settings, SettingsChanged, clamped_grid_size,
+        load_last_window_settings, save_window_size,
     },
-    units::GridSize,
+    units::{Grid, GridSize},
     utils::expand_tilde,
 };
 pub use application::Application;
 pub use application::ShouldRender;
 pub use error_window::show_error_window;
-pub use mouse_manager::{MessageSelectionEvent, MouseEventResult, OverlayEvent};
+pub use mouse_manager::{MessageSelectionEvent, OverlayEvent};
 pub use settings::{ThemeSettings, WindowSettings, WindowSettingsChanged};
 pub use window_wrapper::WinitWindowWrapper;
 
 static DEFAULT_ICON: &[u8] = include_bytes!("../../assets/neovide.ico");
 
-const DEFAULT_WINDOW_SIZE: PhysicalSize<u32> = PhysicalSize {
-    width: 500,
-    height: 500,
-};
-const MIN_PERSISTENT_WINDOW_SIZE: PhysicalSize<u32> = PhysicalSize {
-    width: 300,
-    height: 150,
-};
-const MAX_PERSISTENT_WINDOW_SIZE: PhysicalSize<u32> = PhysicalSize {
-    width: 8192,
-    height: 8192,
-};
+const DEFAULT_WINDOW_SIZE: PhysicalSize<u32> = PhysicalSize { width: 500, height: 500 };
+const MIN_PERSISTENT_WINDOW_SIZE: PhysicalSize<u32> = PhysicalSize { width: 300, height: 150 };
+const MAX_PERSISTENT_WINDOW_SIZE: PhysicalSize<u32> = PhysicalSize { width: 8192, height: 8192 };
 
 #[allow(dead_code)]
 #[derive(Clone, Debug, PartialEq)]
@@ -85,7 +75,7 @@ pub struct Pressure {
 }
 
 #[cfg(target_os = "macos")]
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum ForceClickKind {
     Text,
     Url,
@@ -103,7 +93,7 @@ impl From<&str> for ForceClickKind {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum WindowCommand {
     TitleChanged(String),
     SetMouseEnabled(bool),
@@ -132,7 +122,14 @@ pub enum WindowCommand {
     UnregisterRightClick,
 }
 
-#[derive(Debug)]
+#[cfg(target_os = "macos")]
+#[derive(Clone, Debug, PartialEq)]
+pub enum MacShortcutCommand {
+    TogglePinnedWindow,
+    ShowEditorSwitcher,
+}
+
+#[derive(Clone, Debug, PartialEq)]
 pub enum UserEvent {
     DrawCommandBatch(Vec<DrawCommand>),
     WindowCommand(WindowCommand),
@@ -145,6 +142,50 @@ pub enum UserEvent {
     ShowProgressBar {
         percent: f32,
     },
+    #[cfg(target_os = "macos")]
+    CreateWindow,
+    #[cfg(target_os = "macos")]
+    MacShortcut(MacShortcutCommand),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EventTarget {
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+    Window(winit::window::WindowId),
+    Route(RouteId),
+    Focused,
+    All,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct RouteId(u64);
+
+impl RouteId {
+    pub fn next() -> Self {
+        static NEXT_ROUTE_ID: AtomicU64 = AtomicU64::new(1);
+        Self(NEXT_ROUTE_ID.fetch_add(1, Ordering::Relaxed))
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct EventPayload {
+    pub payload: UserEvent,
+    pub target: EventTarget,
+}
+
+impl EventPayload {
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+    pub fn for_window(payload: UserEvent, window_id: winit::window::WindowId) -> Self {
+        Self { payload, target: EventTarget::Window(window_id) }
+    }
+
+    pub fn for_route(payload: UserEvent, route_id: RouteId) -> Self {
+        Self { payload, target: EventTarget::Route(route_id) }
+    }
+
+    pub fn all(payload: UserEvent) -> Self {
+        Self { payload, target: EventTarget::All }
+    }
 }
 
 impl From<Vec<DrawCommand>> for UserEvent {
@@ -156,6 +197,13 @@ impl From<Vec<DrawCommand>> for UserEvent {
 impl From<WindowCommand> for UserEvent {
     fn from(value: WindowCommand) -> Self {
         UserEvent::WindowCommand(value)
+    }
+}
+
+#[cfg(target_os = "macos")]
+impl From<MacShortcutCommand> for EventPayload {
+    fn from(value: MacShortcutCommand) -> Self {
+        EventPayload::all(UserEvent::MacShortcut(value))
     }
 }
 
@@ -171,13 +219,13 @@ impl From<HotReloadConfigs> for UserEvent {
     }
 }
 
-pub fn create_event_loop() -> EventLoop<UserEvent> {
+pub fn create_event_loop() -> EventLoop<EventPayload> {
     let mut builder = EventLoop::with_user_event();
     #[cfg(target_os = "macos")]
     builder.with_default_menu(false);
     let event_loop = builder.build().expect("Failed to create winit event loop");
     #[cfg(target_os = "macos")]
-    register_file_handler();
+    macos::register_file_handler();
     #[allow(clippy::let_and_return)]
     event_loop
 }
@@ -213,9 +261,8 @@ pub fn create_window(
     let window_attributes = window_attributes.with_window_icon(Some(icon));
 
     #[cfg(target_os = "windows")]
-    let window_attributes = window_attributes
-        .with_window_icon(Some(icon.clone()))
-        .with_taskbar_icon(Some(icon));
+    let window_attributes =
+        window_attributes.with_window_icon(Some(icon.clone())).with_taskbar_icon(Some(icon));
 
     #[cfg(target_os = "windows")]
     let window_attributes = if !cmd_line_settings.opengl {
@@ -301,29 +348,18 @@ pub fn determine_window_size(
     let cmd_line = settings.get::<CmdLineSettings>();
 
     match cmd_line.geometry {
-        GeometryArgs {
-            grid: Some(Some(dimensions)),
-            ..
-        } => WindowSize::Grid(clamped_grid_size(&GridSize::new(
-            dimensions.width.try_into().unwrap(),
-            dimensions.height.try_into().unwrap(),
-        ))),
-        GeometryArgs {
-            grid: Some(None), ..
-        } => WindowSize::NeovimGrid,
-        GeometryArgs {
-            size: Some(dimensions),
-            ..
-        } => WindowSize::Size(dimensions.into()),
-        GeometryArgs {
-            maximized: true, ..
-        } => WindowSize::Maximized,
+        GeometryArgs { grid: Some(Some(dimensions)), .. } => {
+            WindowSize::Grid(clamped_grid_size(&GridSize::new(
+                dimensions.width.try_into().unwrap(),
+                dimensions.height.try_into().unwrap(),
+            )))
+        }
+        GeometryArgs { grid: Some(None), .. } => WindowSize::NeovimGrid,
+        GeometryArgs { size: Some(dimensions), .. } => WindowSize::Size(dimensions.into()),
+        GeometryArgs { maximized: true, .. } => WindowSize::Maximized,
         _ => match window_settings {
             Some(PersistentWindowSettings::Maximized { .. }) => WindowSize::Maximized,
-            Some(PersistentWindowSettings::Windowed {
-                pixel_size: Some(pixel_size),
-                ..
-            }) => {
+            Some(PersistentWindowSettings::Windowed { pixel_size: Some(pixel_size), .. }) => {
                 let size = Size::new(*pixel_size);
                 let scale = 1.0;
                 WindowSize::Size(
@@ -337,6 +373,22 @@ pub fn determine_window_size(
                 )
             }
             _ => WindowSize::Size(DEFAULT_WINDOW_SIZE),
+        },
+    }
+}
+
+pub fn determine_grid_size(
+    window_size: &WindowSize,
+    window_settings: Option<PersistentWindowSettings>,
+) -> Option<Size2<Grid<u32>>> {
+    match window_size {
+        WindowSize::Grid(grid_size) => Some(*grid_size),
+        // Clippy wrongly suggests to use unwrap or default here
+        #[allow(clippy::manual_unwrap_or_default)]
+        _ => match window_settings {
+            Some(PersistentWindowSettings::Maximized { grid_size, .. }) => grid_size,
+            Some(PersistentWindowSettings::Windowed { grid_size, .. }) => grid_size,
+            _ => None,
         },
     }
 }

@@ -10,18 +10,9 @@ use crate::{
 
 const SETTINGS_FILE: &str = "neovide-settings.json";
 
-pub const DEFAULT_GRID_SIZE: GridSize<u32> = GridSize {
-    width: 100,
-    height: 50,
-};
-pub const MIN_GRID_SIZE: GridSize<u32> = GridSize {
-    width: 20,
-    height: 6,
-};
-pub const MAX_GRID_SIZE: GridSize<u32> = GridSize {
-    width: 10000,
-    height: 1000,
-};
+pub const DEFAULT_GRID_SIZE: GridSize<u32> = GridSize { width: 100, height: 50 };
+pub const MIN_GRID_SIZE: GridSize<u32> = GridSize { width: 20, height: 6 };
+pub const MAX_GRID_SIZE: GridSize<u32> = GridSize { width: 10000, height: 1000 };
 
 #[derive(Serialize, Deserialize, Debug)]
 pub enum PersistentWindowSettings {
@@ -74,10 +65,13 @@ pub fn load_last_window_settings() -> Result<PersistentWindowSettings, String> {
 }
 
 pub fn save_window_size(window_wrapper: &WinitWindowWrapper, settings: &Settings) {
-    if window_wrapper.skia_renderer.is_none() {
+    if window_wrapper.routes.is_empty() {
         return;
     }
-    let window = window_wrapper.skia_renderer.as_ref().unwrap().window();
+    let window_id = window_wrapper.get_focused_route().unwrap();
+    let route = window_wrapper.routes.get(&window_id).unwrap();
+    let window = route.window.winit_window.clone();
+
     // Don't save the window size when the window is minimized, since the size can be 0
     // Note wayland can't determine this
     if window.is_minimized() == Some(true) {

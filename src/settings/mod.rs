@@ -1,4 +1,4 @@
-mod font;
+pub mod font;
 mod from_value;
 mod window_size;
 
@@ -15,11 +15,11 @@ use std::{
 };
 use winit::event_loop::EventLoopProxy;
 
-use crate::{bridge::NeovimWriter, window::UserEvent};
+use crate::{bridge::NeovimWriter, window::EventPayload, window::RouteId};
 pub use from_value::ParseFromValue;
 pub use window_size::{
-    clamped_grid_size, load_last_window_settings, neovide_std_datapath, save_window_size,
-    PersistentWindowSettings, DEFAULT_GRID_SIZE, MIN_GRID_SIZE,
+    DEFAULT_GRID_SIZE, MIN_GRID_SIZE, PersistentWindowSettings, clamped_grid_size,
+    load_last_window_settings, neovide_std_datapath, save_window_size,
 };
 
 pub mod config;
@@ -80,13 +80,9 @@ impl Settings {
         update_func: UpdateHandlerFunc,
         reader_func: ReaderHandlerFunc,
     ) {
-        self.updaters
-            .write()
-            .insert(setting_location.clone(), update_func);
+        self.updaters.write().insert(setting_location.clone(), update_func);
 
-        self.readers
-            .write()
-            .insert(setting_location.clone(), reader_func);
+        self.readers.write().insert(setting_location.clone(), reader_func);
     }
 
     pub fn set<T: Clone + Send + Sync + 'static>(&self, t: &T) {
@@ -156,7 +152,8 @@ impl Settings {
     pub fn handle_setting_changed_notification(
         &self,
         arguments: Vec<Value>,
-        event_loop_proxy: &EventLoopProxy<UserEvent>,
+        event_loop_proxy: &EventLoopProxy<EventPayload>,
+        route_id: RouteId,
     ) {
         let mut arguments = arguments.into_iter();
         let (Some(name), Some(value)) = (arguments.next(), arguments.next()) else {
@@ -183,13 +180,14 @@ impl Settings {
         };
 
         let event = update_handler(self, value);
-        let _ = event_loop_proxy.send_event(event.into());
+        let _ = event_loop_proxy.send_event(EventPayload::for_route(event.into(), route_id));
     }
 
     pub fn handle_option_changed_notification(
         &self,
         arguments: Vec<Value>,
-        event_loop_proxy: &EventLoopProxy<UserEvent>,
+        event_loop_proxy: &EventLoopProxy<EventPayload>,
+        route_id: RouteId,
     ) {
         let mut arguments = arguments.into_iter();
         let (Some(name), Some(value)) = (arguments.next(), arguments.next()) else {
@@ -217,7 +215,7 @@ impl Settings {
 
         let event = update_handler(self, value);
 
-        let _ = event_loop_proxy.send_event(event.into());
+        let _ = event_loop_proxy.send_event(EventPayload::for_route(event.into(), route_id));
     }
 
     pub fn register<T: SettingGroup>(&self) {
@@ -302,10 +300,7 @@ mod tests {
         settings.set_setting_handlers(location.clone(), noop_update, noop_read);
         let listeners = settings.updaters.read();
         let listener = listeners.get(&location).unwrap();
-        assert!(core::ptr::fn_addr_eq(
-            noop_update as UpdateHandlerFunc,
-            *listener
-        ));
+        assert!(core::ptr::fn_addr_eq(noop_update as UpdateHandlerFunc, *listener));
     }
 
     #[test]
@@ -383,10 +378,7 @@ mod tests {
             .await
             .expect("Could not set mousemoveevent option");
 
-        settings
-            .read_initial_values(&nvim)
-            .await
-            .expect("Read initial values failed");
+        settings.read_initial_values(&nvim).await.expect("Read initial values failed");
 
         let test_settings = settings.get::<TestSettings>();
         assert_eq!(test_settings.foo, "foo");

@@ -3,7 +3,12 @@ use std::os::windows::process::CommandExt;
 use std::process::Command as StdCommand;
 use tokio::process::Command as TokioCommand;
 
-use crate::{bridge::RestartDetails, cmd_line::CmdLineSettings, settings::*};
+use crate::{
+    bridge::RestartDetails, cmd_line::CmdLineSettings, settings::*, utils::handle_wslpaths,
+};
+
+#[cfg(target_os = "macos")]
+const FORKED_FROM_TTY_ENV_VAR: &str = "NEOVIDE_FORKED_FROM_TTY";
 
 #[derive(Clone)]
 struct CommandSpec {
@@ -35,12 +40,12 @@ pub fn create_nvim_command(settings: &Settings) -> TokioCommand {
     create_tokio_nvim_command(&cmdline_settings, true)
 }
 
-pub fn create_restart_nvim_command(details: &RestartDetails) -> TokioCommand {
-    let mut cmd = TokioCommand::new(&details.progpath);
-    cmd.arg("--embed");
-    for arg in details.argv.iter().skip(1) {
-        cmd.arg(arg);
-    }
+pub fn create_restart_nvim_command(settings: &Settings, details: &RestartDetails) -> TokioCommand {
+    let settings = settings.get::<CmdLineSettings>();
+    let spec = create_restart_command_spec(details, &settings);
+
+    #[allow(unused_mut)]
+    let mut cmd = tokio_command_from_spec(spec);
 
     #[cfg(target_os = "windows")]
     cmd.creation_flags(windows::Win32::System::Threading::CREATE_NO_WINDOW.0);
@@ -72,16 +77,65 @@ fn build_nvim_command_parts(
     cmdline_settings: &CmdLineSettings,
     embed: bool,
 ) -> (String, Vec<String>) {
-    let bin = cmdline_settings
-        .neovim_bin
-        .clone()
-        .unwrap_or_else(|| "nvim".to_owned());
-    let mut args = Vec::new();
+    let bin = cmdline_settings.neovim_bin.clone().unwrap_or_else(|| "nvim".to_owned());
+    let mut args = cmdline_settings.neovim_args.clone();
     if embed {
+        append_embed_arg(&mut args);
+    }
+
+    args.extend(build_auto_open_args(cmdline_settings));
+
+    (bin, args)
+}
+
+fn create_restart_command_spec(
+    details: &RestartDetails,
+    cmdline_settings: &CmdLineSettings,
+) -> CommandSpec {
+    let (program, args) = build_restart_command_parts(details, cmdline_settings);
+    create_command_spec(&program, &args, cmdline_settings)
+}
+
+fn build_restart_command_parts(
+    details: &RestartDetails,
+    cmdline_settings: &CmdLineSettings,
+) -> (String, Vec<String>) {
+    if should_replay_startup_command(cmdline_settings) {
+        return build_nvim_command_parts(cmdline_settings, true);
+    }
+
+    build_inner_restart_command_parts(details)
+}
+
+fn should_replay_startup_command(cmdline_settings: &CmdLineSettings) -> bool {
+    cmdline_settings.server.is_none()
+}
+
+fn build_inner_restart_command_parts(details: &RestartDetails) -> (String, Vec<String>) {
+    let mut args = details.argv.iter().skip(1).cloned().collect::<Vec<_>>();
+    prepend_embed_arg(&mut args);
+    (details.progpath.clone(), args)
+}
+
+fn build_auto_open_args(cmdline_settings: &CmdLineSettings) -> Vec<String> {
+    cmdline_settings
+        .tabs
+        .then(|| "-p".to_string())
+        .into_iter()
+        .chain(handle_wslpaths(cmdline_settings.files_to_open.clone(), cmdline_settings.wsl))
+        .collect()
+}
+
+fn append_embed_arg(args: &mut Vec<String>) {
+    if !args.iter().any(|arg| arg == "--embed") {
         args.push("--embed".to_string());
     }
-    args.extend(cmdline_settings.neovim_args.clone());
-    (bin, args)
+}
+
+fn prepend_embed_arg(args: &mut Vec<String>) {
+    if !args.iter().any(|arg| arg == "--embed") {
+        args.insert(0, "--embed".to_string());
+    }
 }
 
 fn tokio_command_from_spec(spec: CommandSpec) -> TokioCommand {
@@ -116,6 +170,20 @@ fn std_command_from_spec(spec: CommandSpec) -> StdCommand {
     result
 }
 
+#[cfg(target_os = "macos")]
+fn launched_from_desktop() -> bool {
+    if std::env::var_os(FORKED_FROM_TTY_ENV_VAR).is_some() {
+        return false;
+    }
+
+    // On macOS, apps launched from Finder or `open` are spawned by launchd = PPID 1.
+    // This is more reliable than $TERM for detecting GUI vs terminal launches,
+    // so we use this as a heuristic instead of relying on $TERM.
+    // https://en.wikipedia.org/wiki/Launchd#Components
+    use rustix::process;
+    matches!(process::getppid(), Some(ppid) if ppid.is_init())
+}
+
 // Creates a shell command if needed on this platform.
 #[cfg(target_os = "macos")]
 fn create_command_spec(
@@ -123,20 +191,16 @@ fn create_command_spec(
     args: &[String],
     _cmdline_settings: &CmdLineSettings,
 ) -> CommandSpec {
-    use std::env;
     use uzers::os::unix::UserExt;
-    if env::var_os("TERM").is_some() {
-        // If $TERM is set, we assume user is running from a terminal, and we shouldn't
-        // re-initialize the environment. See https://github.com/neovide/neovide/issues/2584
+    if !launched_from_desktop() {
+        // If we're not launched from the desktop, assume a terminal launch and avoid
+        // re-initializing the environment. See https://github.com/neovide/neovide/issues/2584
         CommandSpec::new(command, args.to_vec())
     } else {
         // Otherwise run inside a login shell to ensure the environment matches a
         // normal GUI launch. See https://github.com/neovide/neovide/issues/2584
         let user = uzers::get_user_by_uid(uzers::get_current_uid()).unwrap();
         let shell = user.shell();
-        // -f: Bypasses authentication for the already-logged-in user.
-        // -p: Preserves the environment.
-        // -q: Forces quiet logins, as if a .hushlogin is present.
 
         // Convert to a single string and add quotes
         let args =
@@ -144,6 +208,9 @@ fn create_command_spec(
         CommandSpec::new(
             "/usr/bin/login",
             vec![
+                // -f: Bypasses authentication for the already-logged-in user.
+                // -p: Preserves the environment.
+                // -q: Forces quiet logins, as if a .hushlogin is present.
                 "-fpq".to_string(),
                 user.name().to_str().unwrap().to_string(),
                 shell.to_str().unwrap().to_string(),
@@ -189,4 +256,96 @@ fn create_command_spec(
     _cmdline_settings: &CmdLineSettings,
 ) -> CommandSpec {
     CommandSpec::new(command, args.to_vec())
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::cmd_line::handle_command_line_arguments;
+
+    use super::*;
+
+    fn parse_cmdline_settings(args: &[&str]) -> CmdLineSettings {
+        let settings = Settings::new();
+        let args = args.iter().map(|arg| arg.to_string()).collect();
+        handle_command_line_arguments(args, &settings).expect("Could not parse arguments");
+        settings.get::<CmdLineSettings>()
+    }
+
+    #[test]
+    fn build_nvim_command_parts_places_embed_before_auto_open_args() {
+        let cmdline_settings =
+            parse_cmdline_settings(&["neovide", "./foo.txt", "./bar.md", "--grid=420x240"]);
+
+        let (_, args) = build_nvim_command_parts(&cmdline_settings, true);
+
+        assert_eq!(args, vec!["--embed", "-p", "./foo.txt", "./bar.md"]);
+    }
+
+    #[test]
+    fn build_nvim_command_parts_preserves_launcher_args_before_embed() {
+        let cmdline_settings = parse_cmdline_settings(&[
+            "neovide",
+            "--no-tabs",
+            "--neovim-bin",
+            "ssh",
+            "--",
+            "my-server",
+            "nvim",
+        ]);
+
+        let (bin, args) = build_nvim_command_parts(&cmdline_settings, true);
+
+        assert_eq!(bin, "ssh");
+        assert_eq!(args, vec!["my-server", "nvim", "--embed"]);
+    }
+
+    #[test]
+    fn build_restart_command_parts_replays_original_launcher_command() {
+        let cmdline_settings = parse_cmdline_settings(&[
+            "neovide",
+            "--no-tabs",
+            "--neovim-bin",
+            "ssh",
+            "--",
+            "my-server",
+            "nvim",
+        ]);
+        let restart_details = RestartDetails {
+            progpath: "/usr/bin/nvim".to_string(),
+            argv: vec!["nvim".to_string(), "--clean".to_string()],
+        };
+
+        let (program, args) = build_restart_command_parts(&restart_details, &cmdline_settings);
+
+        assert_eq!(program, "ssh");
+        assert_eq!(args, vec!["my-server", "nvim", "--embed"]);
+    }
+
+    #[test]
+    fn build_restart_command_parts_replays_original_auto_open_args() {
+        let cmdline_settings =
+            parse_cmdline_settings(&["neovide", "./foo.txt", "./bar.md", "--grid=420x240"]);
+        let restart_details = RestartDetails {
+            progpath: "nvim".to_string(),
+            argv: vec!["nvim".to_string(), "--clean".to_string()],
+        };
+
+        let (_, args) = build_restart_command_parts(&restart_details, &cmdline_settings);
+
+        assert_eq!(args, vec!["--embed", "-p", "./foo.txt", "./bar.md"]);
+    }
+
+    #[test]
+    fn build_restart_command_parts_keeps_embed_before_restart_args_for_server_mode() {
+        let cmdline_settings = parse_cmdline_settings(&["neovide", "--server", "127.0.0.1:7777"]);
+        let restart_details = RestartDetails {
+            progpath: "nvim".to_string(),
+            argv: vec!["nvim".to_string(), "-p".to_string(), "foo.txt".to_string()],
+        };
+
+        let (program, args) = build_restart_command_parts(&restart_details, &cmdline_settings);
+
+        assert_eq!(program, "nvim");
+        assert_eq!(args, vec!["--embed", "-p", "foo.txt"]);
+    }
 }

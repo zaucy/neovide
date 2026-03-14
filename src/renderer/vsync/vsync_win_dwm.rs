@@ -1,21 +1,21 @@
 use std::{
     sync::{
-        atomic::{AtomicBool, Ordering},
         Arc,
+        atomic::{AtomicBool, Ordering},
     },
-    thread::{spawn, JoinHandle},
+    thread::{JoinHandle, spawn},
     time::Duration,
 };
 
 use spin_sleep::SpinSleeper;
 use windows::Win32::Foundation::HWND;
-use windows::Win32::Graphics::Dwm::{DwmGetCompositionTimingInfo, DWM_TIMING_INFO};
+use windows::Win32::Graphics::Dwm::{DWM_TIMING_INFO, DwmGetCompositionTimingInfo};
 use windows::Win32::System::Performance::{QueryPerformanceCounter, QueryPerformanceFrequency};
 use winit::event_loop::EventLoopProxy;
 
 use crate::{
     profiling::{tracy_plot, tracy_zone},
-    window::UserEvent,
+    window::{EventPayload, UserEvent},
 };
 
 pub struct VSyncWinDwm {
@@ -45,7 +45,7 @@ fn vblank_wait_time(delay: f64, period: f64, offset: f64) -> f64 {
 impl VSyncWinDwm {
     // On Windows the fake vsync is always enabled
     // Everything else is very jerky
-    pub fn new(proxy: EventLoopProxy<UserEvent>) -> Self {
+    pub fn new(proxy: EventLoopProxy<EventPayload>) -> Self {
         let should_exit = Arc::new(AtomicBool::new(false));
         let redraw_requested = Arc::new(AtomicBool::new(false));
 
@@ -90,17 +90,13 @@ impl VSyncWinDwm {
                     tracy_plot!("sleep_time", _sleep_time);
 
                     if redraw_requested.swap(false, Ordering::Relaxed) {
-                        proxy.send_event(UserEvent::RedrawRequested).ok();
+                        proxy.send_event(EventPayload::all(UserEvent::RedrawRequested)).ok();
                     }
                 }
             }))
         };
 
-        Self {
-            should_exit,
-            vsync_thread,
-            redraw_requested,
-        }
+        Self { should_exit, vsync_thread, redraw_requested }
     }
 
     pub fn wait_for_vsync(&mut self) {}
@@ -130,10 +126,7 @@ mod tests {
         assert_abs_diff_eq!(time_until_vblank_forward(-0.2, 1.0), 0.8);
         assert_abs_diff_eq!(time_until_vblank_forward(-1.0, 1.0), 0.0);
         assert_abs_diff_eq!(time_until_vblank_forward(0.001, 1.0 / 120.0), 0.001);
-        assert_abs_diff_eq!(
-            time_until_vblank_forward(0.009, 1.0 / 120.0),
-            0.009 - 1.0 / 120.0
-        );
+        assert_abs_diff_eq!(time_until_vblank_forward(0.009, 1.0 / 120.0), 0.009 - 1.0 / 120.0);
         assert_abs_diff_eq!(time_until_vblank_forward(0.006739, 1.0 / 144.0), 0.006739);
     }
 
@@ -147,10 +140,7 @@ mod tests {
         assert_abs_diff_eq!(vblank_wait_time(-0.2, 1.0, 0.0), 0.8);
         assert_abs_diff_eq!(vblank_wait_time(-1.0, 1.0, 0.0), 1.0);
         assert_abs_diff_eq!(vblank_wait_time(-1.4, 1.0, 0.0), 0.6);
-        assert_abs_diff_eq!(
-            vblank_wait_time(0.001, 1.0 / 120.0, 0.0),
-            1.0 / 120.0 + 0.001
-        );
+        assert_abs_diff_eq!(vblank_wait_time(0.001, 1.0 / 120.0, 0.0), 1.0 / 120.0 + 0.001);
         assert_abs_diff_eq!(vblank_wait_time(0.009, 1.0 / 120.0, 0.0), 0.009);
         assert_abs_diff_eq!(vblank_wait_time(0.006739, 1.0 / 144.0, 0.0), 0.006739);
     }
@@ -166,9 +156,6 @@ mod tests {
         assert_abs_diff_eq!(vblank_wait_time(-1.0, 1.0, 0.5), 0.5);
         assert_abs_diff_eq!(vblank_wait_time(-1.4, 1.0, 0.5), 1.1);
         assert_abs_diff_eq!(vblank_wait_time(0.001, 1.0 / 120.0, 0.004), 0.005);
-        assert_abs_diff_eq!(
-            vblank_wait_time(0.009, 1.0 / 120.0, 0.004),
-            0.013 - 1.0 / 120.0
-        );
+        assert_abs_diff_eq!(vblank_wait_time(0.009, 1.0 / 120.0, 0.004), 0.013 - 1.0 / 120.0);
     }
 }

@@ -1,19 +1,19 @@
 use itertools::Itertools;
 use skia_safe::{
+    BlendMode, Canvas, ClipOp, Color, Paint, Path, PathOp, Point3, RRect, Rect,
     canvas::SaveLayerRec,
     image_filters::blur,
-    utils::shadow_utils::{draw_shadow, ShadowFlags},
-    BlendMode, Canvas, ClipOp, Color, Paint, Path, PathOp, Point3, RRect, Rect,
+    utils::shadow_utils::{ShadowFlags, draw_shadow},
 };
 
 use glamour::Intersection;
 
 use crate::{
     editor::WindowType,
-    units::{to_skia_rect, GridScale, PixelRect},
+    units::{GridScale, PixelRect, to_skia_rect},
 };
 
-use super::{RenderedWindow, RendererSettings, WindowDrawDetails};
+use super::{RenderedWindow, RendererSettings, WindowDrawDetails, is_rightmost_window_edge};
 
 struct LayerWindow<'w> {
     window: &'w mut RenderedWindow,
@@ -25,33 +25,59 @@ pub struct FloatingLayer<'w> {
 }
 
 impl FloatingLayer<'_> {
+    fn build_draw_clip_and_bounds(
+        &self,
+        mut draw_clip: Path,
+        mut draw_bound_rect: Rect,
+        expanded_regions: &[PixelRect<f32>],
+        grid_scale: GridScale,
+    ) -> (Path, Rect) {
+        for (window, region) in self.windows.iter().zip(expanded_regions.iter().copied()) {
+            if let Some((path, bounds)) = window.trailing_fill_path_and_bounds(region, grid_scale) {
+                if let Some(unioned) = draw_clip.op(&path, PathOp::Union) {
+                    draw_clip = unioned;
+                }
+                draw_bound_rect = Rect::join2(draw_bound_rect, bounds);
+            }
+        }
+
+        (draw_clip, draw_bound_rect)
+    }
+
     pub fn draw(
         &mut self,
         root_canvas: &Canvas,
         settings: &RendererSettings,
         default_background: Color,
         grid_scale: GridScale,
+        content_region: Option<PixelRect<f32>>,
     ) -> Vec<WindowDrawDetails> {
-        let pixel_regions = self
+        let pixel_regions =
+            self.windows.iter().map(|window| window.pixel_region(grid_scale)).collect::<Vec<_>>();
+        let max_layer_x = max_region_max_x(&pixel_regions);
+        let regions = self
             .windows
             .iter()
-            .map(|window| window.pixel_region(grid_scale))
+            .zip(pixel_regions.iter().copied())
+            .map(|(window, region)| {
+                let rightmost_window = is_rightmost_window_edge(region.max.x, max_layer_x);
+                window.expanded_pixel_region(region, content_region, grid_scale, rightmost_window)
+            })
             .collect::<Vec<_>>();
+
         let (silhouette, bound_rect) = build_silhouette(&pixel_regions, settings, grid_scale);
+        let (draw_clip, draw_bound_rect) =
+            self.build_draw_clip_and_bounds(silhouette.clone(), bound_rect, &regions, grid_scale);
         let has_transparency = self.windows.iter().any(|window| window.has_transparency());
 
         self._draw_shadow(root_canvas, &silhouette, settings);
 
         root_canvas.save();
-        root_canvas.clip_path(&silhouette, None, Some(false));
+        root_canvas.clip_path(&draw_clip, None, Some(false));
         let need_blur = has_transparency || settings.floating_blur;
-
         if need_blur {
             if let Some(blur) = blur(
-                (
-                    settings.floating_blur_amount_x,
-                    settings.floating_blur_amount_y,
-                ),
+                (settings.floating_blur_amount_x, settings.floating_blur_amount_y),
                 None,
                 None,
                 None,
@@ -60,38 +86,27 @@ impl FloatingLayer<'_> {
                     .set_anti_alias(false)
                     .set_blend_mode(BlendMode::Src)
                     .to_owned();
-                let save_layer_rec = SaveLayerRec::default()
-                    .backdrop(&blur)
-                    .bounds(&bound_rect)
-                    .paint(&paint);
+                let save_layer_rec =
+                    SaveLayerRec::default().backdrop(&blur).bounds(&draw_bound_rect).paint(&paint);
                 root_canvas.save_layer(&save_layer_rec);
                 root_canvas.restore();
             }
         }
 
-        let paint = Paint::default()
-            .set_anti_alias(false)
-            .set_blend_mode(BlendMode::SrcOver)
-            .to_owned();
+        let paint =
+            Paint::default().set_anti_alias(false).set_blend_mode(BlendMode::SrcOver).to_owned();
 
-        let save_layer_rec = SaveLayerRec::default().bounds(&bound_rect).paint(&paint);
+        let save_layer_rec = SaveLayerRec::default().bounds(&draw_bound_rect).paint(&paint);
 
         root_canvas.save_layer(&save_layer_rec);
         let background_paint = Paint::default().set_color(default_background).to_owned();
-        root_canvas.draw_path(&silhouette, &background_paint);
-
-        let regions = self
-            .windows
-            .iter()
-            .map(|window| window.pixel_region(grid_scale))
-            .collect::<Vec<_>>();
-
+        root_canvas.draw_path(&draw_clip, &background_paint);
         let mut ret = vec![];
 
         (0..self.windows.len()).for_each(|i| {
             let window = &mut self.windows[i];
-            window.draw_background_surface(root_canvas, regions[i], grid_scale);
-            window.draw_foreground_surface(root_canvas, regions[i], grid_scale);
+            window.draw_background_surface(root_canvas, pixel_regions[i], grid_scale);
+            window.draw_foreground_surface(root_canvas, pixel_regions[i], grid_scale);
             ret.push(WindowDrawDetails {
                 id: window.id,
                 region: regions[i],
@@ -99,6 +114,10 @@ impl FloatingLayer<'_> {
                 window_type: window.window_type,
             });
         });
+
+        for (window, region) in self.windows.iter().zip(regions.iter().copied()) {
+            window.draw_trailing_background_surface(root_canvas, region, grid_scale);
+        }
 
         root_canvas.restore();
 
@@ -165,10 +184,7 @@ fn group_windows_with_regions(windows: &mut Vec<LayerWindow>, regions: &[PixelRe
             let group_i = get_window_group(windows, i);
             let group_j = get_window_group(windows, j);
             if group_i != group_j
-                && regions[i]
-                    .to_rect()
-                    .inflate((epsilon, epsilon).into())
-                    .intersects(&regions[j])
+                && regions[i].to_rect().inflate((epsilon, epsilon).into()).intersects(&regions[j])
             {
                 let new_group = group_i.min(group_j);
                 if group_i != group_j {
@@ -187,15 +203,10 @@ pub fn group_windows(
     let mut windows = windows
         .into_iter()
         .enumerate()
-        .map(|(index, window)| LayerWindow {
-            window,
-            group: index,
-        })
+        .map(|(index, window)| LayerWindow { window, group: index })
         .collect::<Vec<_>>();
-    let regions = windows
-        .iter()
-        .map(|window| window.window.pixel_region(grid_scale))
-        .collect::<Vec<_>>();
+    let regions =
+        windows.iter().map(|window| window.window.pixel_region(grid_scale)).collect::<Vec<_>>();
     group_windows_with_regions(&mut windows, &regions);
     for i in 0..windows.len() {
         let _ = get_window_group(&mut windows, i);
@@ -220,13 +231,13 @@ fn build_silhouette(
         .reduce(|a, b| a.op(&b, PathOp::Union).unwrap())
         .unwrap();
 
-    let bounding_rect = regions
-        .iter()
-        .map(to_skia_rect)
-        .reduce(Rect::join2)
-        .unwrap();
+    let bounding_rect = regions.iter().map(to_skia_rect).reduce(Rect::join2).unwrap();
 
     (silhouette, bounding_rect)
+}
+
+fn max_region_max_x(regions: &[PixelRect<f32>]) -> f32 {
+    regions.iter().fold(f32::NEG_INFINITY, |max_x, region| max_x.max(region.max.x))
 }
 
 fn rect_to_round_rect_path(rect: Rect, settings: &RendererSettings, grid_scale: GridScale) -> Path {

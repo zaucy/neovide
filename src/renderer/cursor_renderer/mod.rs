@@ -5,17 +5,17 @@ use std::{collections::HashMap, sync::Arc};
 
 use approx::AbsDiffEq;
 use itertools::Itertools;
-use skia_safe::{op, Canvas, Paint, Path, PathBuilder};
+use skia_safe::{Canvas, Paint, Path, PathBuilder, op};
 use winit::event::WindowEvent;
 
 use crate::{
     bridge::EditorMode,
     editor::{Cursor, CursorShape, Word},
     profiling::{tracy_plot, tracy_zone},
-    renderer::{animation_utils::*, GridRenderer, RenderedWindow},
+    renderer::{GridRenderer, RenderedWindow, animation_utils::*},
     settings::{ParseFromValue, Settings},
     units::{
-        to_skia_point, GridPos, GridScale, GridSize, PixelPos, PixelRect, PixelSize, PixelVec,
+        GridPos, GridScale, GridSize, PixelPos, PixelRect, PixelSize, PixelVec, to_skia_point,
     },
     window::ShouldRender,
 };
@@ -27,7 +27,7 @@ const DEFAULT_CELL_PERCENTAGE: f32 = 1.0 / 8.0;
 const STANDARD_CORNERS: &[(f32, f32); 4] = &[(-0.5, -0.5), (0.5, -0.5), (0.5, 0.5), (-0.5, 0.5)];
 
 #[cfg(feature = "profiling")]
-use std::ffi::{c_char, CStr};
+use std::ffi::{CStr, c_char};
 #[cfg(feature = "profiling")]
 static PLOT_NAMES_X: [&CStr; 4] = [
     unsafe { CStr::from_ptr(b"Cursor top left x\0".as_ptr() as *const c_char) },
@@ -56,6 +56,7 @@ pub struct CursorSettings {
     trail_size: f32,
     unfocused_outline_width: f32,
     smooth_blink: bool,
+    cell_color_fallback: bool,
 
     vfx_mode: cursor_vfx::VfxModeList,
     vfx_opacity: f32,
@@ -78,6 +79,7 @@ impl Default for CursorSettings {
             trail_size: 1.0,
             unfocused_outline_width: 1.0 / 8.0,
             smooth_blink: false,
+            cell_color_fallback: false,
             vfx_mode: cursor_vfx::VfxModeList::default(),
             vfx_opacity: 200.0,
             vfx_particle_lifetime: 0.5,
@@ -165,9 +167,7 @@ impl Corner {
         {
             // Use a fast animation time for short jumps less than two characters, typically when
             // typing or holding a key in insert mode
-            settings
-                .animation_length
-                .min(settings.short_animation_length)
+            settings.animation_length.min(settings.short_animation_length)
         } else {
             let leading = settings.animation_length * (1.0 - settings.trail_size).clamp(0.0, 1.0);
             let trailing = settings.animation_length;
@@ -354,7 +354,7 @@ impl CursorRenderer {
         // Draw Background
         let background_color = self
             .cursor
-            .background(&grid_renderer.default_style.colors)
+            .background(&grid_renderer.default_style.colors, settings.cell_color_fallback)
             .to_color()
             .with_a((opacity * alpha) as u8);
         paint.set_color(background_color);
@@ -369,7 +369,7 @@ impl CursorRenderer {
         // Draw foreground
         let foreground_color = self
             .cursor
-            .foreground(&grid_renderer.default_style.colors)
+            .foreground(&grid_renderer.default_style.colors, settings.cell_color_fallback)
             .to_color()
             .with_a((opacity * alpha) as u8);
         paint.set_color(foreground_color);
@@ -393,10 +393,9 @@ impl CursorRenderer {
         );
         if !box_char_drawn {
             let pos = (self.destination.x, self.destination.y + baseline_offset);
-            let blobs = &grid_renderer.shaper.shape_cached(
-                Word::new(&character, &[character.len() as u8]),
-                coarse_style,
-            );
+            let blobs = &grid_renderer
+                .shaper
+                .shape_cached(Word::new(&character, &[character.len() as u8]), coarse_style);
             for blob in blobs.iter() {
                 canvas.draw_text_blob(blob, pos, &paint);
             }
@@ -444,9 +443,7 @@ impl CursorRenderer {
             self.previous_cursor_shape = Some(self.cursor.shape.clone());
             self.set_cursor_shape(
                 &self.cursor.shape.clone(),
-                self.cursor
-                    .cell_percentage
-                    .unwrap_or(DEFAULT_CELL_PERCENTAGE),
+                self.cursor.cell_percentage.unwrap_or(DEFAULT_CELL_PERCENTAGE),
             );
 
             for vfx in self.cursor_vfxs.iter_mut() {
@@ -503,10 +500,15 @@ impl CursorRenderer {
             }
 
             let mut vfx_animating = false;
+            let vfx_base_color = self
+                .cursor
+                .background(&grid_renderer.default_style.colors, settings.cell_color_fallback)
+                .to_color();
 
             for vfx in self.cursor_vfxs.iter_mut() {
                 let ret = vfx.update(
                     &settings,
+                    vfx_base_color,
                     center_destination,
                     cursor_dimensions,
                     immediate_movement,

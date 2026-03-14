@@ -1,18 +1,18 @@
 use std::error::Error;
 use std::sync::{Arc, Mutex, Weak};
 
+use copypasta::{ClipboardContext, ClipboardProvider};
 #[cfg(target_os = "linux")]
 use copypasta::{
     wayland_clipboard,
     x11_clipboard::{Primary as X11SelectionClipboard, X11ClipboardContext},
 };
-use copypasta::{ClipboardContext, ClipboardProvider};
 use raw_window_handle::HasDisplayHandle;
 #[cfg(target_os = "linux")]
 use raw_window_handle::{RawDisplayHandle, WaylandDisplayHandle};
 use winit::event_loop::EventLoop;
 
-use crate::window::UserEvent;
+use crate::window::EventPayload;
 
 type Result<T> = std::result::Result<T, Box<dyn Error + Send + Sync + 'static>>;
 
@@ -29,9 +29,7 @@ pub struct ClipboardHandle {
 
 impl ClipboardHandle {
     pub fn new(clipboard: &Arc<Mutex<Clipboard>>) -> Self {
-        Self {
-            inner: Arc::downgrade(clipboard),
-        }
+        Self { inner: Arc::downgrade(clipboard) }
     }
 
     pub fn upgrade(&self) -> Option<Arc<Mutex<Clipboard>>> {
@@ -40,16 +38,13 @@ impl ClipboardHandle {
 }
 
 impl Clipboard {
-    pub fn new(event_loop: &EventLoop<UserEvent>) -> Arc<Mutex<Self>> {
+    pub fn new(event_loop: &EventLoop<EventPayload>) -> Arc<Mutex<Self>> {
         let clipboard = match event_loop.display_handle().unwrap().as_raw() {
             #[cfg(target_os = "linux")]
             RawDisplayHandle::Wayland(WaylandDisplayHandle { mut display, .. }) => unsafe {
                 let (selection, clipboard) =
                     wayland_clipboard::create_clipboards_from_external(display.as_mut());
-                Clipboard {
-                    clipboard: Box::new(clipboard),
-                    selection: Box::new(selection),
-                }
+                Clipboard { clipboard: Box::new(clipboard), selection: Box::new(selection) }
             },
             #[cfg(target_os = "linux")]
             _ => Clipboard {
@@ -57,9 +52,7 @@ impl Clipboard {
                 selection: Box::new(X11ClipboardContext::<X11SelectionClipboard>::new().unwrap()),
             },
             #[cfg(not(target_os = "linux"))]
-            _ => Clipboard {
-                clipboard: Box::new(ClipboardContext::new().unwrap()),
-            },
+            _ => Clipboard { clipboard: Box::new(ClipboardContext::new().unwrap()) },
         };
 
         Arc::new(Mutex::new(clipboard))
