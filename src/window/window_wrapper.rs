@@ -644,43 +644,53 @@ impl WinitWindowWrapper {
                 }
             }
             WindowSettingsChanged::Frame(frame) => {
-                if let Some(skia_renderer) = &self.skia_renderer {
-                    skia_renderer.window().set_decorations(frame == Frame::Full);
+                for window_id in window_ids.iter() {
+                    if let Some(route) = self.routes.get(window_id) {
+                        route.window.winit_window.set_decorations(frame == Frame::Full);
+                    }
                 }
             }
             WindowSettingsChanged::WindowPosX(x) => {
-                if let Some(skia_renderer) = &self.skia_renderer {
-                    let window = skia_renderer.window();
-                    let mut pos = window.outer_position().unwrap_or_default();
-                    pos.x = x;
-                    window.set_outer_position(pos);
+                for window_id in window_ids.iter() {
+                    if let Some(route) = self.routes.get(window_id) {
+                        let window = route.window.winit_window.clone();
+                        let mut pos = window.outer_position().unwrap_or_default();
+                        pos.x = x;
+                        window.set_outer_position(pos);
+                    }
                 }
             }
             WindowSettingsChanged::WindowPosY(y) => {
-                if let Some(skia_renderer) = &self.skia_renderer {
-                    let window = skia_renderer.window();
-                    let mut pos = window.outer_position().unwrap_or_default();
-                    pos.y = y;
-                    window.set_outer_position(pos);
+                for window_id in window_ids.iter() {
+                    if let Some(route) = self.routes.get(window_id) {
+                        let window = route.window.winit_window.clone();
+                        let mut pos = window.outer_position().unwrap_or_default();
+                        pos.y = y;
+                        window.set_outer_position(pos);
+                    }
                 }
             }
             WindowSettingsChanged::WindowWidth(width) => {
-                if let Some(skia_renderer) = &self.skia_renderer {
-                    if width > 0 {
-                        let window = skia_renderer.window();
-                        let current_size = window.inner_size();
-                        let new_size = dpi::PhysicalSize::new(width, current_size.height);
-                        let _ = window.request_inner_size(new_size);
+                for window_id in window_ids.iter() {
+                    if let Some(route) = self.routes.get(window_id) {
+                        if width > 0 {
+                            let window = route.window.winit_window.clone();
+                            let current_size = window.inner_size();
+                            let new_size = dpi::PhysicalSize::new(width, current_size.height);
+                            let _ = window.request_inner_size(new_size);
+                        }
                     }
                 }
             }
             WindowSettingsChanged::WindowHeight(height) => {
-                if let Some(skia_renderer) = &self.skia_renderer {
-                    if height > 0 {
-                        let window = skia_renderer.window();
-                        let current_size = window.inner_size();
-                        let new_size = dpi::PhysicalSize::new(current_size.width, height);
-                        let _ = window.request_inner_size(new_size);
+                for window_id in window_ids.iter() {
+                    if let Some(route) = self.routes.get(window_id) {
+                        if height > 0 {
+                            let window = route.window.winit_window.clone();
+                            let current_size = window.inner_size();
+                            let new_size = dpi::PhysicalSize::new(current_size.width, height);
+                            let _ = window.request_inner_size(new_size);
+                        }
                     }
                 }
             }
