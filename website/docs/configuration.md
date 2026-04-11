@@ -183,7 +183,7 @@ vim.g.neovide_pixel_geometry = "RGBH"
 vim.g.neovide_pixel_geometry = "RGBH"
 ```
 
-**Nightly.**
+**Available since 0.16.0.**
 
 Required for the guifont option `#e-subpixelantialias` to work. Defaults to "Unknown".
 
@@ -219,7 +219,7 @@ vim.g.neovide_padding_left = 0
 Controls the space between the window border and the actual Neovim, which is filled with the
 background color instead.
 
-#### Background Color (Removed at Nightly, Previously macOS only)
+#### Background Color (Removed in 0.16.0, Previously macOS only)
 
 This legacy configuration has now been fully removed. Neovide controls the title bar color
 automatically, and setting `g:neovide_background_color` no longer has any effect.
@@ -255,6 +255,32 @@ vim.g.neovide_title_background_color = string.format(
 
 vim.g.neovide_title_text_color = "pink"
 ```
+
+#### Corner Preference (Currently Windows only)
+
+**Available since 0.16.0.**
+
+VimScript:
+
+```vim
+let g:neovide_corner_preference = "round"
+```
+
+Lua:
+
+```lua
+vim.g.neovide_corner_preference = "round"
+```
+
+Setting `g:neovide_corner_preference` controls the preferred window corner style when supported by
+Windows.
+
+Accepted values:
+
+- `default`
+- `round`
+- `round_small`
+- `do_not_round`
 
 #### Window Blur (Currently macOS only)
 
@@ -462,7 +488,7 @@ vim.g.neovide_progress_bar_animation_speed = 200.0
 vim.g.neovide_progress_bar_hide_delay = 0.2
 ```
 
-**Nightly.**
+**Available since 0.16.0.**
 
 - `g:neovide_progress_bar_enabled` sets whether the progress bar is enabled.
 - `g:neovide_progress_bar_height` sets the height of the progress bar in pixels.
@@ -502,7 +528,7 @@ Lua:
 vim.g.neovide_message_area_drag_selection = false
 ```
 
-**Nightly.**
+**Available since 0.16.0.**
 
 Set this to `v:false` to disable drag selection in Neovide message windows, for example
 `:messages` or shell command output. This is enabled by default.
@@ -550,7 +576,7 @@ Set the [`background`](https://neovim.io/doc/user/options.html#'background') opt
 starts. Possible values: _light_, _dark_, _auto_. On systems that support it, _auto_ will mirror the
 system theme, and will update `background` when the system theme changes.
 
-**Nightly.**
+**Available since 0.16.0.**
 
 **NOTE:** The meaning of the setting has changed in 0.16.0. The default value of the Neovim
 [`background`](https://neovim.io/doc/user/options.html#'background') option is now always
@@ -800,7 +826,7 @@ Lua:
 vim.g.neovide_highlight_matching_pair = true
 ```
 
-**Nightly.**
+**Available since 0.16.0.**
 
 When enabled, Neovide highlights the matching pair using the system find indicator. The
 default is `false`.
@@ -884,12 +910,12 @@ vim.api.nvim_create_autocmd({ "CmdlineEnter", "CmdlineLeave" }, {
 
 #### macOS Multi-window (Editors)
 
-**Available on Nightly.**
+**Available since 0.16.0.**
 
 Neovide can show multiple windows on macOS either as separate OS windows or as native tabs inside a
 single host window.
 
-Set `macos-native-tabs = true` to merge windows into a tab group. The native tab bar stays hidden
+Set `system-native-tabs = true` to merge windows into a tab group. The native tab bar stays hidden
 until more than one tab exists to keep a clean single-window look.
 
 Use Window > New Window (cmd+n) or the Dock menu to open another Neovide window. If native tabs
@@ -907,14 +933,14 @@ Neovide registers system-wide shortcuts on macOS:
   to the front.
 - **Editors** <kbd>⌘</kbd> + <kbd>⌃</kbd> + <kbd>N</kbd> opens the Editors (tab overview) view so
   you can pick another Neovide window. This shortcut is only available when
-  `macos-native-tabs = true` and if only one window exists, it behaves the same as the pinned
+  `system-native-tabs = true` and if only one window exists, it behaves the same as the pinned
   shortcut.
 
 Customize them by setting the environment variables:
 
 ```bash
-launchctl setenv NEOVIDE_MACOS_PINNED_HOTKEY "ctrl+shift+z"
-launchctl setenv NEOVIDE_MACOS_SWITCHER_HOTKEY "ctrl+shift+n"
+launchctl setenv NEOVIDE_SYSTEM_PINNED_HOTKEY "ctrl+shift+z"
+launchctl setenv NEOVIDE_SYSTEM_SWITCHER_HOTKEY "ctrl+shift+n"
 ```
 
 Use `cmd`, `ctrl`, `alt`, and `shift` for modifiers and a single character for the key.
@@ -927,15 +953,15 @@ system. Check the Neovide log for warnings.
 You can also configure them inside `config.toml`:
 
 ```toml
-macos-pinned-hotkey = "ctrl+shift+z"
-macos-switcher-hotkey = "ctrl+shift+n"
+system-pinned-hotkey = "ctrl+shift+z"
+system-switcher-hotkey = "ctrl+shift+n"
 ```
 
-When `macos-native-tabs` is enabled, you can also customize the in-app tab navigation shortcuts:
+When `system-native-tabs` is enabled, you can also customize the in-app tab navigation shortcuts:
 
 ```toml
-macos-tab-prev-hotkey = "cmd+shift+["
-macos-tab-next-hotkey = "cmd+shift+]"
+system-tab-prev-hotkey = "cmd+shift+["
+system-tab-next-hotkey = "cmd+shift+]"
 ```
 
 These work only while Neovide is focused so the keypress never reaches Neovim, mirroring the native
@@ -1425,7 +1451,7 @@ Lua:
 vim.g.neovide_has_mouse_grid_detection = true
 ```
 
-**Nightly.**
+**Available since 0.16.0.**
 
 **Requires Neovim 0.12.0.**
 

@@ -11,6 +11,7 @@ mod ui_commands;
 use std::{
     io::Error,
     ops::Add,
+    path::Path,
     sync::{Arc, Mutex},
     time::Duration,
 };
@@ -41,8 +42,9 @@ use tokio::{
 };
 use winit::event_loop::EventLoopProxy;
 
-use command::create_restart_nvim_command;
-pub use command::{create_blocking_nvim_command, create_nvim_command};
+#[cfg(test)]
+pub use command::create_tokio_nvim_command;
+pub use command::{OpenArgs, OpenMode, create_blocking_nvim_command};
 pub use events::*;
 pub use restart::RestartDetails;
 pub use session::NeovimWriter;
@@ -94,16 +96,24 @@ pub struct NeovimRuntime {
 async fn neovim_instance(
     settings: &Settings,
     restart: Option<&RestartDetails>,
+    cwd: Option<&Path>,
+    mode: OpenMode,
 ) -> Result<NeovimInstance> {
     if let Some(info) = restart {
-        return Ok(NeovimInstance::Embedded(create_restart_nvim_command(settings, info)));
+        return Ok(NeovimInstance::Server { address: info.listen_addr.clone() });
     }
 
     if let Some(address) = settings.get::<CmdLineSettings>().server {
         return Ok(NeovimInstance::Server { address });
     }
 
-    Ok(NeovimInstance::Embedded(create_nvim_command(settings)))
+    let cmdline_settings = settings.get::<CmdLineSettings>();
+    Ok(NeovimInstance::Embedded(command::create_tokio_nvim_command(
+        &cmdline_settings,
+        true,
+        cwd,
+        mode,
+    )))
 }
 
 pub async fn show_error_message(
@@ -130,6 +140,7 @@ pub async fn show_error_message(
     nvim.echo(prepared_lines, true, nvim_dict! {}).await
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn create_neovim_session(
     route_id: RouteId,
     handler: NeovimHandler,
@@ -137,8 +148,10 @@ async fn create_neovim_session(
     settings: Arc<Settings>,
     background: &str,
     restart_details: Option<&RestartDetails>,
+    cwd: Option<&Path>,
+    mode: OpenMode,
 ) -> Result<NeovimSession> {
-    let neovim_instance = neovim_instance(settings.as_ref(), restart_details).await?;
+    let neovim_instance = neovim_instance(settings.as_ref(), restart_details, cwd, mode).await?;
     #[allow(unused_mut)]
     let mut session = NeovimSession::new(neovim_instance, handler.clone())
         .await
@@ -157,8 +170,7 @@ async fn create_neovim_session(
 
     let cmdline_settings = settings.get::<CmdLineSettings>();
 
-    let remote =
-        cmdline_settings.wsl || (cmdline_settings.server.is_some() && restart_details.is_none());
+    let remote = cmdline_settings.wsl || cmdline_settings.server.is_some();
     // This is too verbose to keep enabled all the time
     // log::info!("Api information {:#?}", api_information);
     setup_neovide_specific_state(&session.neovim, remote, &api_information, &settings).await?;
@@ -200,14 +212,18 @@ async fn create_neovim_session(
     // Triggers loading the user config
 
     let grid_size = grid_size.map_or(DEFAULT_GRID_SIZE, |v| clamped_grid_size(&v));
-    let res = session
+    session
         .neovim
         .ui_attach(grid_size.width as i64, grid_size.height as i64, &options)
         .await
-        .context("Could not attach ui to neovim process");
+        .context("Could not attach ui to neovim process")?;
+
+    #[cfg(target_os = "macos")]
+    ui_commands::mark_file_drop_handler_ready(&handler);
 
     info!("Neovim process attached");
-    res.map(|()| session)
+
+    Ok(session)
 }
 
 async fn run(route_id: RouteId, session: NeovimSession, proxy: EventLoopProxy<EventPayload>) {
@@ -311,6 +327,7 @@ impl NeovimRuntime {
         })
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn launch(
         &mut self,
         route_id: RouteId,
@@ -319,6 +336,8 @@ impl NeovimRuntime {
         running_tracker: RunningTracker,
         settings: Arc<Settings>,
         config: &Config,
+        cwd: Option<&Path>,
+        mode: OpenMode,
     ) -> Result<NeovimHandler> {
         let mut colorscheme_stream = self.colorscheme_stream();
         let editor_handler = start_editor_handler(
@@ -343,6 +362,8 @@ impl NeovimRuntime {
             settings,
             &initial_background,
             None,
+            cwd,
+            mode,
         )) {
             Ok(session) => session,
             Err(err) => {
@@ -368,6 +389,7 @@ impl NeovimRuntime {
         self.shutdown_timeout(timeout);
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn restart(
         &mut self,
         route_id: RouteId,
@@ -376,6 +398,7 @@ impl NeovimRuntime {
         grid_size: GridSize<u32>,
         settings: Arc<Settings>,
         restart_details: RestartDetails,
+        cwd: Option<&Path>,
     ) -> Result<()> {
         let background = self.current_background();
         let session = self.runtime().block_on(create_neovim_session(
@@ -385,6 +408,8 @@ impl NeovimRuntime {
             settings,
             &background,
             Some(&restart_details),
+            cwd,
+            OpenMode::None,
         ))?;
 
         self.runtime().spawn(run(route_id, session, event_loop_proxy));

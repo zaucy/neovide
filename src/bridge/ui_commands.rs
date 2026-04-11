@@ -3,6 +3,9 @@ use std::{
     sync::{Arc, LazyLock, Mutex},
 };
 
+#[cfg(target_os = "macos")]
+use std::sync::atomic::{AtomicBool, Ordering};
+
 use anyhow::{Context, Result};
 use indoc::indoc;
 use log::trace;
@@ -34,9 +37,19 @@ pub static ROUTE_HANDLER_REGISTRY: LazyLock<Mutex<HashMap<RouteId, NeovimHandler
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
 /// Startup buffer for macOS cold start. file drops that can arrive before any
-/// neovim handler is active. Flushed when the first route handler registers
+/// ready to replay them safely.
 #[cfg(target_os = "macos")]
-static PENDING_FILE_DROPS: LazyLock<Mutex<Vec<String>>> = LazyLock::new(|| Mutex::new(Vec::new()));
+type PendingFileDrop = (String, Option<bool>);
+
+#[cfg(target_os = "macos")]
+static PENDING_FILE_DROPS: LazyLock<Mutex<Vec<PendingFileDrop>>> =
+    LazyLock::new(|| Mutex::new(Vec::new()));
+
+/// macOS cold-start file opens must wait until the first embedded neovim has
+/// completed ui_attach, otherwise they can run before filetype/syntax
+/// autocommands exist.
+#[cfg(target_os = "macos")]
+static FILE_DROP_HANDLER_READY: AtomicBool = AtomicBool::new(false);
 
 pub fn get_active_handler() -> Option<NeovimHandler> {
     HANDLER_REGISTRY.lock().unwrap().clone()
@@ -47,13 +60,15 @@ pub fn require_active_handler() -> NeovimHandler {
 }
 
 #[cfg(target_os = "macos")]
-pub fn send_or_queue_file_drop(path: String) {
-    if let Some(handler) = get_active_handler() {
-        send_ui(ParallelCommand::FileDrop(path), &handler);
-        return;
+pub fn send_or_queue_file_drop(path: String, tabs: Option<bool>) {
+    if FILE_DROP_HANDLER_READY.load(Ordering::SeqCst) {
+        if let Some(handler) = get_active_handler() {
+            send_ui(ParallelCommand::FileDrop { path, tabs }, &handler);
+            return;
+        }
     }
 
-    PENDING_FILE_DROPS.lock().unwrap().push(path);
+    PENDING_FILE_DROPS.lock().unwrap().push((path, tabs));
 }
 
 #[cfg(target_os = "macos")]
@@ -63,9 +78,22 @@ fn flush_pending_file_drops(handler: &NeovimHandler) {
         std::mem::take(&mut *pending)
     };
 
-    for path in pending {
-        send_ui(ParallelCommand::FileDrop(path), handler);
+    for (path, tabs) in pending {
+        send_ui(ParallelCommand::FileDrop { path, tabs }, handler);
     }
+}
+
+#[cfg(target_os = "macos")]
+fn flush_pending_file_drops_when_ready(handler: &NeovimHandler) {
+    if FILE_DROP_HANDLER_READY.load(Ordering::SeqCst) {
+        flush_pending_file_drops(handler);
+    }
+}
+
+#[cfg(target_os = "macos")]
+pub(crate) fn mark_file_drop_handler_ready(handler: &NeovimHandler) {
+    FILE_DROP_HANDLER_READY.store(true, Ordering::SeqCst);
+    flush_pending_file_drops(handler);
 }
 
 async fn ime_call(
@@ -233,7 +261,7 @@ impl SerialCommand {
 pub enum ParallelCommand {
     Quit,
     Resize { width: u64, height: u64 },
-    FileDrop(String),
+    FileDrop { path: String, tabs: Option<bool> },
     FocusLost,
     FocusGained,
     DisplayAvailableFonts(Vec<String>),
@@ -312,7 +340,7 @@ impl ParallelCommand {
             ParallelCommand::FocusGained => {
                 nvim.ui_set_focus(true).await.context("FocusGained failed")
             }
-            ParallelCommand::FileDrop(path) => nvim
+            ParallelCommand::FileDrop { path, tabs } => nvim
                 .exec_lua(
                     "neovide.private.dropfile(...)",
                     call_args![
@@ -320,7 +348,7 @@ impl ParallelCommand {
                             .first()
                             .unwrap()
                             .to_string(),
-                        settings.get::<CmdLineSettings>().tabs
+                        tabs.unwrap_or(settings.get::<CmdLineSettings>().tabs)
                     ],
                 )
                 .await
@@ -385,7 +413,7 @@ pub fn start_ui_command_handler(
     handler.update_current_neovim(nvim, can_support_ime_api);
     register_route_handler(route_id, handler.clone());
     #[cfg(target_os = "macos")]
-    flush_pending_file_drops(&handler);
+    flush_pending_file_drops_when_ready(&handler);
     if handler.mark_ui_command_started() {
         return;
     }

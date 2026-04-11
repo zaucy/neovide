@@ -23,7 +23,9 @@ pub use window_size::{
 };
 
 pub mod config;
-pub use config::{Config, HotReloadConfigs};
+pub use config::{
+    AppHotReloadConfigs, Config, HotReloadConfigs, RendererHotReloadConfigs, WindowHotReloadConfigs,
+};
 
 pub trait SettingGroup {
     type ChangedEvent: Debug + Clone + Send + Sync + Any;
@@ -261,7 +263,7 @@ mod tests {
     use super::*;
     use crate::{
         bridge::{
-            create_nvim_command,
+            OpenMode, create_tokio_nvim_command,
             session::{NeovimInstance, NeovimSession},
         },
         cmd_line::CmdLineSettings,
@@ -363,10 +365,11 @@ mod tests {
         let settings = Settings::new();
         settings.register::<TestSettings>();
 
-        //create_nvim_command tries to read from CmdLineSettings.neovim_args
+        // create_tokio_nvim_command reads from CmdLineSettings.neovim_args
         settings.set::<CmdLineSettings>(&CmdLineSettings::default());
 
-        let command = create_nvim_command(&settings);
+        let cmdline_settings = settings.get::<CmdLineSettings>();
+        let command = create_tokio_nvim_command(&cmdline_settings, true, None, OpenMode::Startup);
         let instance = NeovimInstance::Embedded(command);
         let NeovimSession { neovim: nvim, .. } = NeovimSession::new(instance, NeovimHandler())
             .await

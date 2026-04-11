@@ -354,7 +354,7 @@ impl MacosWindowFeature {
         let window_settings = settings.get::<WindowSettings>();
         let simple_fullscreen = window_settings.macos_simple_fullscreen;
         let enable_native_tabs = frame != Frame::None && !simple_fullscreen;
-        let show_native_tabs = cmd_line_settings.macos_native_tabs && enable_native_tabs;
+        let show_native_tabs = cmd_line_settings.system_native_tabs && enable_native_tabs;
         ENABLE_NATIVE_TAB_BAR.store(enable_native_tabs, Ordering::Relaxed);
         SHOW_NATIVE_TAB_BAR.store(show_native_tabs, Ordering::Relaxed);
 
@@ -367,12 +367,6 @@ impl MacosWindowFeature {
         if enable_native_tabs {
             Self::configure_native_tabbing(&ns_window);
             merge_all_windows_if_native_tabs(&ns_window);
-        }
-
-        if cmd_line_settings.title_hidden {
-            ns_window.setTitleVisibility(NSWindowTitleVisibility::Hidden);
-            ns_window.setTitlebarAppearsTransparent(true);
-            ns_window.setTitle(ns_string!(""));
         }
 
         let mut extra_titlebar_height_in_pixel: u32 = 0;
@@ -430,6 +424,7 @@ impl MacosWindowFeature {
         };
 
         let mut macos_window_feature = macos_window_feature;
+        macos_window_feature.set_title_hidden(cmd_line_settings.title_hidden);
         macos_window_feature.set_simple_fullscreen_mode(simple_fullscreen);
         macos_window_feature.update_background();
 
@@ -1008,6 +1003,20 @@ impl MacosWindowFeature {
             self.settings.get::<WindowSettings>();
         let opaque = opacity.min(normal_opacity) >= 1.0;
         self.update_ns_background(opaque, show_border);
+    }
+
+    pub fn set_title_hidden(&self, title_hidden: bool) {
+        let frame = self.settings.get::<CmdLineSettings>().frame;
+        let transparent = matches!(frame, Frame::Transparent | Frame::Buttonless);
+        let transparent_titlebar = title_hidden || transparent;
+        let hidden = if title_hidden {
+            NSWindowTitleVisibility::Hidden
+        } else {
+            NSWindowTitleVisibility::Visible
+        };
+
+        self.ns_window.setTitleVisibility(hidden);
+        self.ns_window.setTitlebarAppearsTransparent(transparent_titlebar);
     }
 
     pub fn handle_settings_changed(&mut self, changed_setting: WindowSettingsChanged) {
@@ -1738,7 +1747,7 @@ pub fn is_tab_overview_active() -> bool {
 pub fn register_file_handler() {
     fn dispatch_file_drops(filenames: &NSArray<NSString>) {
         for filename in filenames.iter() {
-            send_or_queue_file_drop(filename.to_string());
+            send_or_queue_file_drop(filename.to_string(), None);
         }
     }
 

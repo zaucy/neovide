@@ -45,12 +45,11 @@ opengl = false # macOS/Windows only
 # server = "/tmp/nvim.sock" # or "127.0.0.1:7777"
 srgb = false # platform-specific: false (Linux/macOS) or true (Windows)
 tabs = true
-macos-native-tabs = false # macOS only
-macos-pinned-hotkey = "cmd+ctrl+z" # macOS only
-macos-switcher-hotkey = "cmd+ctrl+n" # macOS only, requires macos-native-tabs = true
-macos-tab-prev-hotkey = "cmd+shift+[" # macOS only
-macos-tab-next-hotkey = "cmd+shift+]" # macOS only
-theme = "auto"
+system-native-tabs = false # macOS only
+system-pinned-hotkey = "cmd+ctrl+z" # macOS only
+system-switcher-hotkey = "cmd+ctrl+n" # macOS only, requires system-native-tabs = true
+system-tab-prev-hotkey = "cmd+shift+[" # macOS only
+system-tab-next-hotkey = "cmd+shift+]" # macOS only
 title-hidden = false
 vsync = true
 # wayland-app-id = "neovide"
@@ -76,6 +75,21 @@ Settings that are mutually exclusive on the command line (for example `size`, `g
 `maximized`) are also mutually exclusive in the config file.
 
 ### Runtime settings
+
+#### Window Geometry
+
+**Available since 0.16.0.**
+
+`size`, `grid` and `maximized` can be hot reloaded from `config.toml`.
+
+They are still mutually exclusive. `size` applies a new pixel size to all live windows, `grid`
+applies a new Neovim grid size, and `maximized` updates the live maximized state.
+
+#### Idle
+
+**Available since 0.16.0.**
+
+`idle` can be hot reloaded from `config.toml`.
 
 #### `Font`
 

@@ -22,6 +22,8 @@ mod dimensions;
 mod editor;
 mod error_handling;
 mod frame;
+#[cfg(target_os = "macos")]
+mod ipc;
 mod platform;
 mod profiling;
 mod renderer;
@@ -29,6 +31,7 @@ mod running_tracker;
 mod settings;
 mod units;
 mod utils;
+mod version;
 mod window;
 
 #[cfg(target_os = "windows")]
@@ -62,6 +65,7 @@ use error_handling::handle_startup_errors;
 use renderer::{
     RendererSettings, cursor_renderer::CursorSettings, progress_bar::ProgressBarSettings,
 };
+use version::BUILD_VERSION;
 use window::{
     Application, EventPayload, WindowSettings, create_event_loop, determine_grid_size,
     determine_window_size,
@@ -71,7 +75,13 @@ pub use channel_utils::*;
 #[cfg(target_os = "windows")]
 pub use windows_utils::*;
 
-use crate::settings::{Config, Settings, load_last_window_settings};
+use crate::{
+    error_handling::{StartupErrorOutput, report_startup_error},
+    settings::{Config, Settings, load_last_window_settings},
+};
+
+#[cfg(target_os = "macos")]
+use crate::utils::resolved_cwd;
 
 pub use profiling::startup_profiler;
 
@@ -103,15 +113,22 @@ fn main() -> ExitCode {
     #[cfg(target_os = "linux")]
     env::remove_var("ARGV0");
 
+    let settings = Arc::new(Settings::new());
+    let config = Config::init();
+    if let Err(err) = preflight(&settings) {
+        return report_startup_error(err, StartupErrorOutput::Stderr);
+    }
+
+    #[cfg(not(test))]
+    init_logger(&settings);
+
     let event_loop = create_event_loop();
     let clipboard = clipboard::Clipboard::new(&event_loop);
     let clipboard_handle = clipboard::ClipboardHandle::new(&clipboard);
-    let settings = Arc::new(Settings::new());
     let setup_proxy = event_loop.create_proxy();
-    let config = match setup(setup_proxy, settings.clone()) {
-        Ok(config) => config,
-        Err(err) => return handle_startup_errors(err, event_loop, settings.clone(), clipboard),
-    };
+    if let Err(err) = setup(setup_proxy, settings.clone(), &config) {
+        return handle_startup_errors(err, event_loop, settings.clone(), clipboard);
+    }
 
     // Set BgColor by default when using a transparent frame, so the titlebar text gets correct
     // color.
@@ -136,6 +153,15 @@ fn main() -> ExitCode {
         clipboard_handle,
     );
 
+    #[cfg(target_os = "macos")]
+    let _handoff_listener = match ipc::handoff::start_listener(event_loop.create_proxy()) {
+        Ok(listener) => Some(listener),
+        Err(error) => {
+            log::warn!("failed to start handoff listener: {error:#}");
+            None
+        }
+    };
+
     let result = application.run(event_loop);
     match result {
         Ok(_) => application.runtime_tracker.exit_code(),
@@ -144,7 +170,39 @@ fn main() -> ExitCode {
     }
 }
 
-fn setup(proxy: EventLoopProxy<EventPayload>, settings: Arc<Settings>) -> Result<Config> {
+fn preflight(settings: &Settings) -> Result<()> {
+    // will exit if -h or -v
+    cmd_line::handle_command_line_arguments(args().collect(), settings)?;
+
+    {
+        let cmdline_settings = settings.get::<CmdLineSettings>();
+        if let Some(status) = cmd_line::maybe_passthrough_to_neovim(&cmdline_settings)? {
+            std::process::exit(cmd_line::exit_status_code(status));
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    match maybe_handoff(settings) {
+        HandoffOutcome::Continue => {}
+        HandoffOutcome::Exit => std::process::exit(0),
+        HandoffOutcome::Error(error) => return Err(anyhow::anyhow!(error)),
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    maybe_disown(settings);
+
+    startup_profiler();
+
+    trace!("Neovide version: {}", BUILD_VERSION);
+
+    Ok(())
+}
+
+fn setup(
+    proxy: EventLoopProxy<EventPayload>,
+    settings: Arc<Settings>,
+    config: &Config,
+) -> Result<()> {
     //  --------------
     // | Architecture |
     //  --------------
@@ -219,7 +277,6 @@ fn setup(proxy: EventLoopProxy<EventPayload>, settings: Arc<Settings>) -> Result
     settings.register::<CursorSettings>();
     settings.register::<ProgressBarSettings>();
 
-    let config = Config::init();
     Config::watch_config_file(config.clone(), proxy.clone());
 
     set_hook(Box::new({
@@ -234,25 +291,45 @@ fn setup(proxy: EventLoopProxy<EventPayload>, settings: Arc<Settings>) -> Result
         }
     }));
 
-    //Will exit if -h or -v
-    cmd_line::handle_command_line_arguments(args().collect(), settings.as_ref())?;
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+enum HandoffOutcome {
+    Continue,
+    Exit,
+    Error(String),
+}
+
+#[cfg(target_os = "macos")]
+fn maybe_handoff(settings: &Settings) -> HandoffOutcome {
+    let cmdline_settings = settings.get::<CmdLineSettings>();
+    if !cmdline_settings.reuse_instance
+        || cmdline_settings.server.is_some()
+        || (cmdline_settings.files_to_open.is_empty() && !cmdline_settings.new_window)
     {
-        let cmdline_settings = settings.get::<CmdLineSettings>();
-        if let Some(status) = cmd_line::maybe_passthrough_to_neovim(&cmdline_settings)? {
-            std::process::exit(cmd_line::exit_status_code(status));
+        return HandoffOutcome::Continue;
+    }
+
+    let request = ipc::handoff::HandoffRequest {
+        version: BUILD_VERSION.to_owned(),
+        files_to_open: cmdline_settings.files_to_open.clone(),
+        cwd: resolved_cwd(cmd_line::argv_chdir().as_deref()),
+        caller_cwd: resolved_cwd(None),
+        tabs: cmdline_settings.tabs,
+        new_window: cmdline_settings.new_window,
+    };
+
+    match ipc::handoff::try_handoff(&request) {
+        ipc::handoff::HandoffResult::Accepted => HandoffOutcome::Exit,
+        ipc::handoff::HandoffResult::NoListener => HandoffOutcome::Continue,
+        ipc::handoff::HandoffResult::Rejected(error) => {
+            HandoffOutcome::Error(format!("reuse-instance request was rejected: {error}"))
+        }
+        ipc::handoff::HandoffResult::Failed(error) => {
+            HandoffOutcome::Error(format!("reuse-instance request failed: {error}"))
         }
     }
-    #[cfg(not(target_os = "windows"))]
-    maybe_disown(&settings);
-
-    startup_profiler();
-
-    #[cfg(not(test))]
-    init_logger(&settings);
-
-    trace!("Neovide version: {}", env!("NEOVIDE_BUILD_VERSION"));
-
-    Ok(config)
 }
 
 #[cfg(not(test))]

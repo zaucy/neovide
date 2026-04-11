@@ -132,12 +132,23 @@ pub enum MacShortcutCommand {
 #[derive(Clone, Debug, PartialEq)]
 pub enum UserEvent {
     DrawCommandBatch(Vec<DrawCommand>),
+    #[cfg(target_os = "macos")]
+    OpenFiles {
+        files: Vec<String>,
+        cwd: Option<String>,
+        caller_cwd: Option<String>,
+        tabs: bool,
+        new_window: bool,
+    },
     WindowCommand(WindowCommand),
     SettingsChanged(SettingsChanged),
     ConfigsChanged(Box<HotReloadConfigs>),
     #[allow(dead_code)]
     RedrawRequested,
     NeovimExited,
+    NeovimLaunchError {
+        message: String,
+    },
     NeovimRestart(RestartDetails),
     ShowProgressBar {
         percent: f32,

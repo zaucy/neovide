@@ -476,9 +476,10 @@ impl Renderer {
         animating
     }
 
-    pub fn handle_config_changed(&mut self, config: HotReloadConfigs) {
+    pub fn handle_config_changed(&mut self, config: RendererHotReloadConfigs) {
         match config {
-            HotReloadConfigs::Font(font) => {
+            RendererHotReloadConfigs::Font(font) => {
+                let font = *font;
                 let mut font_config_state = self.settings.get::<FontConfigState>();
                 font_config_state.has_font = font.is_some();
                 self.settings.set(&font_config_state);
@@ -491,7 +492,7 @@ impl Renderer {
                     }
                 }
             }
-            HotReloadConfigs::BoxDrawing(settings) => {
+            RendererHotReloadConfigs::BoxDrawing(settings) => {
                 self.grid_renderer.handle_box_drawing_update(settings.unwrap_or_default())
             }
         }
@@ -510,8 +511,22 @@ impl Renderer {
         result
     }
 
+    pub fn sync_scale_factor(&mut self) {
+        let user_scale_factor = self.settings.get::<WindowSettings>().scale_factor.into();
+        self.handle_user_scale_factor_change(user_scale_factor);
+    }
+
+    pub fn handle_user_scale_factor_change(&mut self, user_scale_factor: f64) {
+        self.user_scale_factor = user_scale_factor;
+        self.update_scale_factor();
+    }
+
     pub fn handle_os_scale_factor_change(&mut self, os_scale_factor: f64) {
         self.os_scale_factor = os_scale_factor;
+        self.update_scale_factor();
+    }
+
+    fn update_scale_factor(&mut self) {
         self.grid_renderer
             .handle_scale_factor_update(self.os_scale_factor * self.user_scale_factor);
     }
@@ -711,4 +726,46 @@ pub fn create_skia_renderer(
     };
     tracy_create_gpu_context("main_render_context", renderer.as_ref());
     renderer
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use super::*;
+
+    fn create_renderer() -> Renderer {
+        let settings = Arc::new(Settings::new());
+        settings.register::<WindowSettings>();
+        Renderer::new(2.0, Config::default(), settings)
+    }
+
+    #[test]
+    fn user_scale_updates_apply_immediately() {
+        let mut renderer = create_renderer();
+        let initial_size = renderer.grid_renderer.shaper.current_size();
+
+        renderer.handle_user_scale_factor_change(1.5);
+
+        assert_eq!(renderer.user_scale_factor, 1.5);
+        assert_eq!(renderer.grid_renderer.shaper.current_size(), initial_size * 1.5);
+    }
+
+    #[test]
+    fn scale_can_be_resynced_from_settings_after_renderer_creation() {
+        let settings = Arc::new(Settings::new());
+        settings.register::<WindowSettings>();
+
+        let mut renderer = Renderer::new(1.0, Config::default(), settings.clone());
+        let initial_size = renderer.grid_renderer.shaper.current_size();
+
+        let mut window_settings = settings.get::<WindowSettings>();
+        window_settings.scale_factor = 1.5;
+        settings.set(&window_settings);
+
+        renderer.sync_scale_factor();
+
+        assert_eq!(renderer.user_scale_factor, 1.5);
+        assert_eq!(renderer.grid_renderer.shaper.current_size(), initial_size * 1.5);
+    }
 }

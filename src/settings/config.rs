@@ -7,6 +7,7 @@ use serde::Deserialize;
 use winit::event_loop::EventLoopProxy;
 
 use crate::{
+    cmd_line::{GeometryArgs, MouseCursorIcon},
     error_msg,
     frame::Frame,
     renderer::box_drawing::BoxDrawingSettings,
@@ -60,16 +61,16 @@ pub struct Config {
     pub no_multigrid: Option<bool>,
     pub srgb: Option<bool>,
     pub tabs: Option<bool>,
-    pub macos_native_tabs: Option<bool>,
+    pub system_native_tabs: Option<bool>,
     pub mouse_cursor_icon: Option<String>,
     pub title_hidden: Option<bool>,
     pub vsync: Option<bool>,
     pub wsl: Option<bool>,
     pub backtraces_path: Option<PathBuf>,
-    pub macos_pinned_hotkey: Option<String>,
-    pub macos_switcher_hotkey: Option<String>,
-    pub macos_tab_prev_hotkey: Option<String>,
-    pub macos_tab_next_hotkey: Option<String>,
+    pub system_pinned_hotkey: Option<String>,
+    pub system_switcher_hotkey: Option<String>,
+    pub system_tab_prev_hotkey: Option<String>,
+    pub system_tab_next_hotkey: Option<String>,
     pub icon: Option<String>,
     pub chdir: Option<PathBuf>,
     pub opengl: Option<bool>,
@@ -81,8 +82,27 @@ pub struct Config {
 #[derive(Debug, Clone, PartialEq)]
 #[allow(clippy::large_enum_variant)]
 pub enum HotReloadConfigs {
-    Font(Option<FontSettings>),
+    App(AppHotReloadConfigs),
+    Renderer(RendererHotReloadConfigs),
+    Window(WindowHotReloadConfigs),
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum AppHotReloadConfigs {
+    Idle(bool),
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum RendererHotReloadConfigs {
+    Font(Box<Option<FontSettings>>),
     BoxDrawing(Option<BoxDrawingSettings>),
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum WindowHotReloadConfigs {
+    TitleHidden(Option<bool>),
+    MouseCursorIcon(MouseCursorIcon),
+    Geometry(GeometryArgs),
 }
 
 impl Config {
@@ -150,20 +170,20 @@ impl Config {
         if let Some(tabs) = &self.tabs {
             env::set_var("NEOVIDE_TABS", tabs.to_string());
         }
-        if let Some(macos_native_tabs) = &self.macos_native_tabs {
-            env::set_var("NEOVIDE_MACOS_NATIVE_TABS", macos_native_tabs.to_string());
+        if let Some(system_native_tabs) = &self.system_native_tabs {
+            env::set_var("NEOVIDE_SYSTEM_NATIVE_TABS", system_native_tabs.to_string());
         }
-        if let Some(pinned_hotkey) = &self.macos_pinned_hotkey {
-            env::set_var("NEOVIDE_MACOS_PINNED_HOTKEY", pinned_hotkey);
+        if let Some(pinned_hotkey) = &self.system_pinned_hotkey {
+            env::set_var("NEOVIDE_SYSTEM_PINNED_HOTKEY", pinned_hotkey);
         }
-        if let Some(switcher_hotkey) = &self.macos_switcher_hotkey {
-            env::set_var("NEOVIDE_MACOS_SWITCHER_HOTKEY", switcher_hotkey);
+        if let Some(switcher_hotkey) = &self.system_switcher_hotkey {
+            env::set_var("NEOVIDE_SYSTEM_SWITCHER_HOTKEY", switcher_hotkey);
         }
-        if let Some(tab_prev_hotkey) = &self.macos_tab_prev_hotkey {
-            env::set_var("NEOVIDE_MACOS_TAB_PREV_HOTKEY", tab_prev_hotkey);
+        if let Some(tab_prev_hotkey) = &self.system_tab_prev_hotkey {
+            env::set_var("NEOVIDE_SYSTEM_TAB_PREV_HOTKEY", tab_prev_hotkey);
         }
-        if let Some(tab_next_hotkey) = &self.macos_tab_next_hotkey {
-            env::set_var("NEOVIDE_MACOS_TAB_NEXT_HOTKEY", tab_next_hotkey);
+        if let Some(tab_next_hotkey) = &self.system_tab_next_hotkey {
+            env::set_var("NEOVIDE_SYSTEM_TAB_NEXT_HOTKEY", tab_next_hotkey);
         }
         if let Some(icon) = &self.icon {
             env::set_var("NEOVIDE_ICON", icon);
@@ -244,16 +264,73 @@ fn watcher_thread(init_config: Config, event_loop_proxy: EventLoopProxy<EventPay
         if config.font != previous_config.font {
             event_loop_proxy
                 .send_event(EventPayload::all(UserEvent::ConfigsChanged(Box::new(
-                    HotReloadConfigs::Font(config.font.clone()),
+                    HotReloadConfigs::Renderer(RendererHotReloadConfigs::Font(Box::new(
+                        config.font.clone(),
+                    ))),
                 ))))
                 .unwrap();
         }
         if config.box_drawing != previous_config.box_drawing {
             event_loop_proxy
                 .send_event(EventPayload::all(UserEvent::ConfigsChanged(Box::new(
-                    HotReloadConfigs::BoxDrawing(config.box_drawing.clone()),
+                    HotReloadConfigs::Renderer(RendererHotReloadConfigs::BoxDrawing(
+                        config.box_drawing.clone(),
+                    )),
                 ))))
                 .unwrap();
+        }
+        if config.idle != previous_config.idle {
+            event_loop_proxy
+                .send_event(EventPayload::all(UserEvent::ConfigsChanged(Box::new(
+                    HotReloadConfigs::App(AppHotReloadConfigs::Idle(config.idle.unwrap_or(true))),
+                ))))
+                .unwrap();
+        }
+        if config.title_hidden != previous_config.title_hidden {
+            event_loop_proxy
+                .send_event(EventPayload::all(UserEvent::ConfigsChanged(Box::new(
+                    HotReloadConfigs::Window(WindowHotReloadConfigs::TitleHidden(
+                        config.title_hidden,
+                    )),
+                ))))
+                .unwrap();
+        }
+        if config.mouse_cursor_icon != previous_config.mouse_cursor_icon {
+            match MouseCursorIcon::from_config(config.mouse_cursor_icon.as_deref()) {
+                Ok(mouse_cursor_icon) => {
+                    event_loop_proxy
+                        .send_event(EventPayload::all(UserEvent::ConfigsChanged(Box::new(
+                            HotReloadConfigs::Window(WindowHotReloadConfigs::MouseCursorIcon(
+                                mouse_cursor_icon,
+                            )),
+                        ))))
+                        .unwrap();
+                }
+                Err(err) => {
+                    error_msg!("While reloading config file: invalid mouse-cursor-icon: {err}");
+                }
+            }
+        }
+        if config.size != previous_config.size
+            || config.grid != previous_config.grid
+            || config.maximized != previous_config.maximized
+        {
+            match GeometryArgs::from_config(
+                config.size.as_deref(),
+                config.grid.as_deref(),
+                config.maximized,
+            ) {
+                Ok(geometry) => {
+                    event_loop_proxy
+                        .send_event(EventPayload::all(UserEvent::ConfigsChanged(Box::new(
+                            HotReloadConfigs::Window(WindowHotReloadConfigs::Geometry(geometry)),
+                        ))))
+                        .unwrap();
+                }
+                Err(err) => {
+                    error_msg!("While reloading config file: invalid geometry: {err}");
+                }
+            }
         }
         previous_config = config;
     }

@@ -2,13 +2,16 @@ use std::{iter, process::ExitStatus};
 
 use crate::{
     bridge::create_blocking_nvim_command, dimensions::Dimensions, frame::Frame, settings::*,
+    version::BUILD_VERSION,
 };
 
 use anyhow::{Context, Result};
 use clap::{
-    ArgAction, Parser,
+    ArgAction, Parser, ValueEnum,
     builder::{FalseyValueParser, Styles, styling},
 };
+#[cfg(target_os = "macos")]
+use clap::{CommandFactory, parser::ValueSource};
 use winit::window::CursorIcon;
 
 #[cfg(target_os = "windows")]
@@ -27,7 +30,7 @@ fn get_styles() -> Styles {
 }
 
 #[derive(Clone, Debug, Parser)]
-#[command(version = env!("NEOVIDE_BUILD_VERSION"), about, long_about = None, styles = get_styles())]
+#[command(version = BUILD_VERSION, about, long_about = None, styles = get_styles())]
 pub struct CmdLineSettings {
     /// Files to open (usually plainly appended to NeoVim args, except when --wsl is used)
     #[arg(
@@ -52,6 +55,16 @@ pub struct CmdLineSettings {
     /// Connect to the named pipe or socket at ADDRESS
     #[arg(long, alias = "remote-tcp", env = "NEOVIDE_SERVER", value_name = "ADDRESS")]
     pub server: Option<String>,
+
+    /// Open files in an existing Neovide app instance if one is already running
+    #[cfg(target_os = "macos")]
+    #[arg(long = "reuse-instance", action = ArgAction::SetTrue, default_value = "0", value_parser = FalseyValueParser::new())]
+    pub reuse_instance: bool,
+
+    /// Open files in a new window when reusing an existing Neovide instance
+    #[cfg(target_os = "macos")]
+    #[arg(long = "new-window", requires = "reuse_instance", action = ArgAction::SetTrue, default_value = "0", value_parser = FalseyValueParser::new())]
+    pub new_window: bool,
 
     /// Run NeoVim in WSL rather than on the host
     #[arg(long, env = "NEOVIDE_WSL")]
@@ -95,33 +108,33 @@ pub struct CmdLineSettings {
     #[arg(long = "no-tabs", action = ArgAction::SetTrue, value_parser = FalseyValueParser::new())]
     _no_tabs: bool,
 
-    /// Keep the native macOS tab bar visible when windows merge together
+    /// Keep the native system tab bar visible when windows merge together
     #[cfg(target_os = "macos")]
-    #[arg(long = "macos-native-tabs", env = "NEOVIDE_MACOS_NATIVE_TABS", action = ArgAction::SetTrue, default_value = "0", value_parser = FalseyValueParser::new())]
-    pub macos_native_tabs: bool,
+    #[arg(long = "system-native-tabs", env = "NEOVIDE_SYSTEM_NATIVE_TABS", action = ArgAction::SetTrue, default_value = "0", value_parser = FalseyValueParser::new())]
+    pub system_native_tabs: bool,
 
-    /// Hide the native macOS tab bar even if the config enables it
+    /// Hide the native system tab bar even if the config enables it
     #[cfg(target_os = "macos")]
-    #[arg(long = "no-macos-native-tabs", action = ArgAction::SetTrue, value_parser = FalseyValueParser::new())]
-    _no_macos_native_tabs: bool,
+    #[arg(long = "no-system-native-tabs", action = ArgAction::SetTrue, value_parser = FalseyValueParser::new())]
+    _no_system_native_tabs: bool,
 
-    /// Cycle to the previous macOS tab when pressed inside Neovide
+    /// Cycle to the previous system tab when pressed inside Neovide
     #[cfg(target_os = "macos")]
     #[arg(
-        long = "macos-tab-prev-hotkey",
-        env = "NEOVIDE_MACOS_TAB_PREV_HOTKEY",
+        long = "system-tab-prev-hotkey",
+        env = "NEOVIDE_SYSTEM_TAB_PREV_HOTKEY",
         default_value = "cmd+shift+["
     )]
-    pub macos_tab_prev_hotkey: String,
+    pub system_tab_prev_hotkey: String,
 
-    /// Cycle to the next macOS tab when pressed inside Neovide
+    /// Cycle to the next system tab when pressed inside Neovide
     #[cfg(target_os = "macos")]
     #[arg(
-        long = "macos-tab-next-hotkey",
-        env = "NEOVIDE_MACOS_TAB_NEXT_HOTKEY",
+        long = "system-tab-next-hotkey",
+        env = "NEOVIDE_SYSTEM_TAB_NEXT_HOTKEY",
         default_value = "cmd+shift+]"
     )]
-    pub macos_tab_next_hotkey: String,
+    pub system_tab_next_hotkey: String,
 
     /// Request sRGB when initializing the window, may help with GPUs with weird pixel
     /// formats. Default on Windows.
@@ -196,18 +209,44 @@ pub struct GeometryArgs {
     pub maximized: bool,
 }
 
-#[derive(ValueEnum, Clone, Debug)]
+#[derive(ValueEnum, Clone, Debug, PartialEq, Eq)]
 pub enum MouseCursorIcon {
     Arrow,
     IBeam,
 }
 
 impl MouseCursorIcon {
+    pub fn from_config(value: Option<&str>) -> Result<Self, String> {
+        value.map_or(Ok(Self::Arrow), |value| <Self as ValueEnum>::from_str(value, false))
+    }
+
     pub fn parse(&self) -> CursorIcon {
         match self {
             MouseCursorIcon::Arrow => CursorIcon::Default,
             MouseCursorIcon::IBeam => CursorIcon::Text,
         }
+    }
+}
+
+impl GeometryArgs {
+    pub fn from_config(
+        size: Option<&str>,
+        grid: Option<&str>,
+        maximized: Option<bool>,
+    ) -> Result<Self, String> {
+        let maximized = maximized.unwrap_or(false);
+        let has_size = size.is_some();
+        let has_grid = grid.is_some();
+        let conflicting = (has_size && has_grid) || (maximized && (has_size || has_grid));
+        if conflicting {
+            return Err("size, grid and maximized are mutually exclusive".to_owned());
+        }
+
+        Ok(Self {
+            grid: grid.map(|grid| grid.parse::<Dimensions>().map(Some)).transpose()?,
+            size: size.map(str::parse::<Dimensions>).transpose()?,
+            maximized,
+        })
     }
 }
 
@@ -225,8 +264,8 @@ pub fn handle_command_line_arguments(args: Vec<String>, settings: &Settings) -> 
     }
 
     #[cfg(target_os = "macos")]
-    if cmdline._no_macos_native_tabs {
-        cmdline.macos_native_tabs = false;
+    if cmdline._no_system_native_tabs {
+        cmdline.system_native_tabs = false;
     }
 
     if cmdline._no_fork {
@@ -243,6 +282,15 @@ pub fn handle_command_line_arguments(args: Vec<String>, settings: &Settings) -> 
 
     settings.set::<CmdLineSettings>(&cmdline);
     Ok(())
+}
+
+#[cfg(target_os = "macos")]
+pub fn argv_chdir() -> Option<String> {
+    let matches = CmdLineSettings::command().try_get_matches_from(std::env::args_os()).ok()?;
+
+    (matches.value_source("chdir") == Some(ValueSource::CommandLine))
+        .then(|| matches.get_one::<String>("chdir").cloned())
+        .flatten()
 }
 
 pub fn maybe_passthrough_to_neovim(
@@ -374,6 +422,43 @@ mod tests {
     }
 
     #[test]
+    #[cfg(target_os = "macos")]
+    fn test_reuse_instance_flag() {
+        let settings = Settings::new();
+        let args: Vec<String> =
+            ["neovide", "--reuse-instance", "./foo.txt"].iter().map(|s| s.to_string()).collect();
+
+        handle_command_line_arguments(args, &settings).expect("Could not parse arguments");
+        assert!(settings.get::<CmdLineSettings>().reuse_instance);
+        assert_eq!(settings.get::<CmdLineSettings>().files_to_open, vec!["./foo.txt"]);
+    }
+
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn test_new_window_flag() {
+        let settings = Settings::new();
+        let args: Vec<String> = ["neovide", "--reuse-instance", "--new-window", "./foo.txt"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+
+        handle_command_line_arguments(args, &settings).expect("Could not parse arguments");
+        assert!(settings.get::<CmdLineSettings>().reuse_instance);
+        assert!(settings.get::<CmdLineSettings>().new_window);
+        assert_eq!(settings.get::<CmdLineSettings>().files_to_open, vec!["./foo.txt"]);
+    }
+
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn test_new_window_requires_reuse_instance() {
+        let settings = Settings::new();
+        let args: Vec<String> =
+            ["neovide", "--new-window", "./foo.txt"].iter().map(|s| s.to_string()).collect();
+
+        assert!(handle_command_line_arguments(args, &settings).is_err());
+    }
+
+    #[test]
     fn test_grid() {
         let settings = Settings::new();
         let args: Vec<String> =
@@ -422,6 +507,38 @@ mod tests {
         assert_eq!(
             settings.get::<CmdLineSettings>().geometry.size,
             Some(Dimensions { width: 420, height: 240 }),
+        );
+    }
+
+    #[test]
+    fn test_geometry_args_from_config_size() {
+        assert_eq!(
+            GeometryArgs::from_config(Some("420x240"), None, None).unwrap(),
+            GeometryArgs {
+                size: Some(Dimensions { width: 420, height: 240 }),
+                grid: None,
+                maximized: false,
+            }
+        );
+    }
+
+    #[test]
+    fn test_geometry_args_from_config_grid() {
+        assert_eq!(
+            GeometryArgs::from_config(None, Some("80x24"), None).unwrap(),
+            GeometryArgs {
+                size: None,
+                grid: Some(Some(Dimensions { width: 80, height: 24 })),
+                maximized: false,
+            }
+        );
+    }
+
+    #[test]
+    fn test_geometry_args_from_config_rejects_conflicts() {
+        assert_eq!(
+            GeometryArgs::from_config(Some("420x240"), Some("80x24"), None).unwrap_err(),
+            "size, grid and maximized are mutually exclusive"
         );
     }
 
@@ -612,35 +729,35 @@ mod tests {
     }
     #[cfg(target_os = "macos")]
     #[test]
-    fn test_macos_native_tabs_flag() {
+    fn test_system_native_tabs_flag() {
         let settings = Settings::new();
         let args: Vec<String> =
-            ["neovide", "--macos-native-tabs"].iter().map(|s| s.to_string()).collect();
+            ["neovide", "--system-native-tabs"].iter().map(|s| s.to_string()).collect();
 
         handle_command_line_arguments(args, &settings).expect("Could not parse arguments");
-        assert!(settings.get::<CmdLineSettings>().macos_native_tabs);
+        assert!(settings.get::<CmdLineSettings>().system_native_tabs);
     }
 
     #[cfg(target_os = "macos")]
     #[test]
-    fn test_macos_native_tabs_env() {
+    fn test_system_native_tabs_env() {
         let settings = Settings::new();
         let args: Vec<String> = ["neovide"].iter().map(|s| s.to_string()).collect();
 
-        let _env = ScopedEnv::set("NEOVIDE_MACOS_NATIVE_TABS", "1");
+        let _env = ScopedEnv::set("NEOVIDE_SYSTEM_NATIVE_TABS", "1");
         handle_command_line_arguments(args, &settings).expect("Could not parse arguments");
-        assert!(settings.get::<CmdLineSettings>().macos_native_tabs);
+        assert!(settings.get::<CmdLineSettings>().system_native_tabs);
     }
 
     #[cfg(target_os = "macos")]
     #[test]
-    fn test_macos_native_tabs_override_env() {
+    fn test_system_native_tabs_override_env() {
         let settings = Settings::new();
         let args: Vec<String> =
-            ["neovide", "--no-macos-native-tabs"].iter().map(|s| s.to_string()).collect();
+            ["neovide", "--no-system-native-tabs"].iter().map(|s| s.to_string()).collect();
 
-        let _env = ScopedEnv::set("NEOVIDE_MACOS_NATIVE_TABS", "1");
+        let _env = ScopedEnv::set("NEOVIDE_SYSTEM_NATIVE_TABS", "1");
         handle_command_line_arguments(args, &settings).expect("Could not parse arguments");
-        assert!(!settings.get::<CmdLineSettings>().macos_native_tabs);
+        assert!(!settings.get::<CmdLineSettings>().system_native_tabs);
     }
 }
