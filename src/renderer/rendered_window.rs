@@ -15,7 +15,6 @@ use crate::{
     utils::RingBuffer,
 };
 
-#[cfg(target_os = "macos")]
 pub const BASE_GRID_ID: u64 = 1;
 pub const NO_MULTIGRID_GRID_ID: u64 = 0;
 
@@ -165,6 +164,23 @@ impl RenderedWindow {
             size.height = size.height.saturating_sub(self.grid_destination.y.max(0.0) as u32);
         }
         size
+    }
+
+    fn full_window_vertical_scroll_rows(
+        &self,
+        top: u64,
+        bottom: u64,
+        left: u64,
+        right: u64,
+        rows: i64,
+        cols: i64,
+    ) -> Option<i64> {
+        (top == 0
+            && bottom == u64::from(self.grid_size.height)
+            && left == 0
+            && right == u64::from(self.grid_size.width)
+            && cols == 0)
+            .then_some(rows)
     }
 
     fn get_target_position(&self, grid_rect: &GridRect<f32>) -> GridPos<f32> {
@@ -653,14 +669,6 @@ impl RenderedWindow {
 
                 self.anchor_info = anchor_info;
                 self.window_type = window_type;
-
-                if self.hidden {
-                    self.hidden = false;
-                    self.position_t = 2.0; // We don't want to animate since the window is becoming visible,
-                    // so we set t to 2.0 to stop animations.
-                    self.grid_start_position = grid_position;
-                    self.grid_destination = grid_position;
-                }
             }
             WindowDrawCommand::DrawLine { row, line } => {
                 tracy_zone!("draw_line_cmd", 0);
@@ -688,11 +696,8 @@ impl RenderedWindow {
             }
             WindowDrawCommand::Scroll { top, bottom, left, right, rows, cols } => {
                 tracy_zone!("scroll_cmd", 0);
-                if top == 0
-                    && bottom == u64::from(self.grid_size.height)
-                    && left == 0
-                    && right == u64::from(self.grid_size.width)
-                    && cols == 0
+                if let Some(rows) =
+                    self.full_window_vertical_scroll_rows(top, bottom, left, right, rows, cols)
                 {
                     self.actual_lines.rotate(rows as isize);
                 }
@@ -703,15 +708,16 @@ impl RenderedWindow {
                 self.scrollback_lines.iter_mut().for_each(|line| *line = None);
                 self.scroll_animation.reset();
             }
+            WindowDrawCommand::Show if self.hidden => {
+                tracy_zone!("show_cmd", 0);
+                self.hidden = false;
+                self.position_t = 2.0; // We don't want to animate since the window is becoming visible,
+                // so we set t to 2.0 to stop animations.
+                self.grid_start_position = self.grid_destination;
+                self.scroll_animation.reset();
+            }
             WindowDrawCommand::Show => {
                 tracy_zone!("show_cmd", 0);
-                if self.hidden {
-                    self.hidden = false;
-                    self.position_t = 2.0; // We don't want to animate since the window is becoming visible,
-                    // so we set t to 2.0 to stop animations.
-                    self.grid_start_position = self.grid_destination;
-                    self.scroll_animation.reset();
-                }
             }
             WindowDrawCommand::Hide => {
                 tracy_zone!("hide_cmd", 0);

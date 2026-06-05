@@ -15,9 +15,9 @@ use objc2::{
 };
 
 use objc2_app_kit::{
-    NSApplication, NSAutoresizingMaskOptions, NSColor, NSEvent, NSEventModifierFlags, NSFont,
-    NSFontAttributeName, NSFontDescriptor, NSFontWeight, NSFontWeightLight, NSImage, NSMenu,
-    NSMenuDelegate, NSMenuItem, NSTextView, NSView, NSWindow, NSWindowDidBecomeKeyNotification,
+    NSApplication, NSAutoresizingMaskOptions, NSColor, NSEvent, NSFont, NSFontAttributeName,
+    NSFontDescriptor, NSFontWeight, NSFontWeightLight, NSImage, NSMenu, NSMenuDelegate, NSMenuItem,
+    NSTextView, NSView, NSWindow, NSWindowDidBecomeKeyNotification,
     NSWindowDidBecomeMainNotification, NSWindowStyleMask, NSWindowTabbingMode,
     NSWindowTitleVisibility, NSWorkspace,
 };
@@ -36,6 +36,7 @@ use crate::bridge::{
 use crate::renderer::fonts::font_options::FontOptions;
 use crate::settings::Settings;
 use crate::utils::expand_tilde;
+use crate::window::macos::tab_navigation::KeyCombo;
 use crate::{cmd_line::CmdLineSettings, frame::Frame};
 use winit::{event_loop::EventLoopProxy, window::Window};
 
@@ -150,7 +151,7 @@ impl Drop for FocusSuppressionGuard {
 }
 
 #[link(name = "Quartz", kind = "framework")]
-extern "C" {}
+unsafe extern "C" {}
 
 pub enum TouchpadStage {
     Soft,
@@ -314,6 +315,22 @@ fn open_external_url(url: &str) {
     } else {
         log::warn!("Failed to open URL from Help menu: {url}");
     }
+}
+
+fn apply_menu_item_hotkey(item: &NSMenuItem, raw: &str, setting_name: &str) {
+    let Some(shortcut) = KeyCombo::parse(raw) else {
+        return;
+    };
+
+    let Some(key) = shortcut.to_key() else {
+        log::warn!(
+            "macOS menu shortcut '{raw}' for {setting_name} uses an unsupported named key; ignoring"
+        );
+        return;
+    };
+
+    item.setKeyEquivalent(key.as_ref());
+    item.setKeyEquivalentModifierMask(shortcut.to_modifiers());
 }
 
 #[derive(Debug)]
@@ -732,23 +749,24 @@ impl MacosWindowFeature {
                 handler.removeFromSuperview();
             }
             self.ns_window.setTabbingMode(NSWindowTabbingMode::Disallowed);
-            if let Some(tab_group) = self.ns_window.tabGroup() {
-                if tab_group.isTabBarVisible() {
-                    self.ns_window.toggleTabBar(None);
-                }
+            if let Some(tab_group) = self.ns_window.tabGroup()
+                && tab_group.isTabBarVisible()
+            {
+                self.ns_window.toggleTabBar(None);
             }
         } else {
             self.ns_window.setTabbingMode(NSWindowTabbingMode::Preferred);
             Self::configure_native_tabbing(&self.ns_window);
-            if self.has_transparent_titlebar && self.titlebar_click_handler.is_none() {
-                if let Some(mtm) = MainThreadMarker::new() {
-                    self.titlebar_click_handler = Self::install_titlebar_click_handler(
-                        &self.ns_window,
-                        self.system_titlebar_height,
-                        self.ns_window.backingScaleFactor(),
-                        mtm,
-                    );
-                }
+            if self.has_transparent_titlebar
+                && self.titlebar_click_handler.is_none()
+                && let Some(mtm) = MainThreadMarker::new()
+            {
+                self.titlebar_click_handler = Self::install_titlebar_click_handler(
+                    &self.ns_window,
+                    self.system_titlebar_height,
+                    self.ns_window.backingScaleFactor(),
+                    mtm,
+                );
             }
 
             if should_show_native_tab_bar() {
@@ -760,6 +778,10 @@ impl MacosWindowFeature {
 
     pub fn is_simple_fullscreen_enabled(&self) -> bool {
         self.simple_fullscreen
+    }
+
+    pub fn is_native_fullscreen_enabled(&self) -> bool {
+        self.is_fullscreen
     }
 
     pub fn show_definition_at_point(
@@ -837,8 +859,9 @@ impl MacosWindowFeature {
         indicator_view.setString(&ns_text);
 
         let font_size = (rect.size.height * 0.85).max(1.0);
-        let font =
-            NSFont::monospacedSystemFontOfSize_weight(CGFloat::from(font_size), NSFontWeightLight);
+        let font = unsafe {
+            NSFont::monospacedSystemFontOfSize_weight(CGFloat::from(font_size), NSFontWeightLight)
+        };
 
         indicator_view.setFont(Some(font.as_ref()));
         indicator_view.setTextColor(Some(NSColor::textColor().as_ref()));
@@ -920,9 +943,10 @@ impl MacosWindowFeature {
             .or_else(|| NSFont::fontWithName_size(&font_name, font_size))
             .unwrap_or_else(|| default_font.clone());
 
-        let attributes = NSDictionary::from_slices(&[NSFontAttributeName], &[font.as_ref()]);
+        let font_attribute_name = unsafe { NSFontAttributeName };
+        let attributes = NSDictionary::from_slices(&[font_attribute_name], &[font.as_ref()]);
         let attr_text = NSString::from_str(text);
-        NSAttributedString::new_with_attributes(&attr_text, attributes.as_ref())
+        unsafe { NSAttributedString::new_with_attributes(&attr_text, attributes.as_ref()) }
     }
 
     unsafe fn definition_point(&self, point: Point2<Pixel<f32>>) -> NSPoint {
@@ -1003,6 +1027,13 @@ impl MacosWindowFeature {
             self.settings.get::<WindowSettings>();
         let opaque = opacity.min(normal_opacity) >= 1.0;
         self.update_ns_background(opaque, show_border);
+    }
+
+    pub fn set_document_state(&self, path: &str, modified: bool) {
+        let represented_path = if path.is_empty() || !Path::new(path).exists() { "" } else { path };
+        let ns_path = NSString::from_str(represented_path);
+        self.ns_window.setRepresentedFilename(&ns_path);
+        self.ns_window.setDocumentEdited(modified);
     }
 
     pub fn set_title_hidden(&self, title_hidden: bool) {
@@ -1108,7 +1139,7 @@ impl MacosWindowFeature {
                 return;
             }
 
-            *menu_cell.borrow_mut() = Some(Menu::new(mtm));
+            *menu_cell.borrow_mut() = Some(Menu::new(mtm, self.settings.as_ref()));
             let app = NSApplication::sharedApplication(mtm);
             #[allow(deprecated)]
             app.activateIgnoringOtherApps(true);
@@ -1345,14 +1376,15 @@ impl TabOverviewNotificationHandler {
             "Scheduling detach timer for window ptr = {:?}",
             window_identifier(window.as_ref())
         );
-        let _: Retained<NSTimer> =
+        let _: Retained<NSTimer> = unsafe {
             NSTimer::scheduledTimerWithTimeInterval_target_selector_userInfo_repeats(
                 0.0,
                 self,
                 sel!(neovidePerformDetach:),
                 Some(window.as_ref()),
                 false,
-            );
+            )
+        };
     }
 }
 
@@ -1400,14 +1432,15 @@ impl WindowMenuDelegate {
     }
 
     unsafe fn schedule_deferred_prune(&self, menu: &NSMenu) {
-        let _: Retained<NSTimer> =
+        let _: Retained<NSTimer> = unsafe {
             NSTimer::scheduledTimerWithTimeInterval_target_selector_userInfo_repeats(
                 0.0,
                 self,
                 sel!(neovidePruneWindowMenu:),
                 Some(menu),
                 false,
-            );
+            )
+        };
     }
 }
 
@@ -1488,14 +1521,15 @@ impl WindowMenuNotificationHandler {
     }
 
     unsafe fn schedule_refresh(&self) {
-        let _: Retained<NSTimer> =
+        let _: Retained<NSTimer> = unsafe {
             NSTimer::scheduledTimerWithTimeInterval_target_selector_userInfo_repeats(
                 0.0,
                 self,
                 sel!(neovideRefreshWindowMenu:),
                 None,
                 false,
-            );
+            )
+        };
     }
 }
 #[derive(Debug)]
@@ -1510,7 +1544,7 @@ struct Menu {
 }
 
 impl Menu {
-    fn new(mtm: MainThreadMarker) -> Self {
+    fn new(mtm: MainThreadMarker, settings: &Settings) -> Self {
         let menu = Menu {
             quit_handler: QuitHandler::new(mtm),
             help_menu_handler: HelpMenuHandler::new(mtm),
@@ -1520,11 +1554,11 @@ impl Menu {
             _window_menu_observer: WindowMenuNotificationHandler::register(mtm),
             window_menu_delegate: WindowMenuDelegate::new(mtm),
         };
-        menu.add_menus(mtm);
+        menu.add_menus(mtm, &settings.get::<CmdLineSettings>());
         menu
     }
 
-    fn add_app_menu(&self, mtm: MainThreadMarker) -> Retained<NSMenu> {
+    fn add_app_menu(&self, mtm: MainThreadMarker, settings: &CmdLineSettings) -> Retained<NSMenu> {
         unsafe {
             let app_menu = NSMenu::new(mtm);
             let process_name = NSProcessInfo::processInfo().processName();
@@ -1545,15 +1579,16 @@ impl Menu {
             // application window operations
             let hide_item = NSMenuItem::new(mtm);
             hide_item.setTitle(&ns_string!("Hide ").stringByAppendingString(&process_name));
-            hide_item.setKeyEquivalent(ns_string!("h"));
+            apply_menu_item_hotkey(&hide_item, &settings.system_hide_hotkey, "system_hide_hotkey");
             hide_item.setAction(Some(sel!(hide:)));
             app_menu.addItem(&hide_item);
 
             let hide_others_item = NSMenuItem::new(mtm);
             hide_others_item.setTitle(ns_string!("Hide Others"));
-            hide_others_item.setKeyEquivalent(ns_string!("h"));
-            hide_others_item.setKeyEquivalentModifierMask(
-                NSEventModifierFlags::Option | NSEventModifierFlags::Command,
+            apply_menu_item_hotkey(
+                &hide_others_item,
+                &settings.system_hide_others_hotkey,
+                "system_hide_others_hotkey",
             );
             hide_others_item.setAction(Some(sel!(hideOtherApplications:)));
             app_menu.addItem(&hide_others_item);
@@ -1568,7 +1603,7 @@ impl Menu {
 
             let quit_item = NSMenuItem::new(mtm);
             quit_item.setTitle(&ns_string!("Quit ").stringByAppendingString(&process_name));
-            quit_item.setKeyEquivalent(ns_string!("q"));
+            apply_menu_item_hotkey(&quit_item, &settings.system_quit_hotkey, "system_quit_hotkey");
             quit_item.setAction(Some(sel!(quit:)));
             quit_item.setTarget(Some(&self.quit_handler));
             app_menu.addItem(&quit_item);
@@ -1577,12 +1612,12 @@ impl Menu {
         }
     }
 
-    fn add_menus(&self, mtm: MainThreadMarker) {
+    fn add_menus(&self, mtm: MainThreadMarker, settings: &CmdLineSettings) {
         let app = NSApplication::sharedApplication(mtm);
 
         let main_menu = NSMenu::new(mtm);
 
-        let app_menu = self.add_app_menu(mtm);
+        let app_menu = self.add_app_menu(mtm, settings);
         let app_menu_item = NSMenuItem::new(mtm);
         app_menu_item.setSubmenu(Some(&app_menu));
         if let Some(services_menu) = app_menu.itemWithTitle(ns_string!("Services")) {
@@ -1590,7 +1625,7 @@ impl Menu {
         }
         main_menu.addItem(&app_menu_item);
 
-        let win_menu = self.add_window_menu(mtm);
+        let win_menu = self.add_window_menu(mtm, settings);
         let win_menu_item = NSMenuItem::new(mtm);
         win_menu_item.setSubmenu(Some(&win_menu));
         main_menu.addItem(&win_menu_item);
@@ -1606,7 +1641,11 @@ impl Menu {
         app.setMainMenu(Some(&main_menu));
     }
 
-    fn add_window_menu(&self, mtm: MainThreadMarker) -> Retained<NSMenu> {
+    fn add_window_menu(
+        &self,
+        mtm: MainThreadMarker,
+        settings: &CmdLineSettings,
+    ) -> Retained<NSMenu> {
         unsafe {
             let menu = NSMenu::new(mtm);
             menu.setTitle(ns_string!("Window"));
@@ -1616,16 +1655,21 @@ impl Menu {
 
             let full_screen_item = NSMenuItem::new(mtm);
             full_screen_item.setTitle(ns_string!("Enter Full Screen"));
-            full_screen_item.setKeyEquivalent(ns_string!("f"));
-            full_screen_item.setAction(Some(sel!(toggleFullScreen:)));
-            full_screen_item.setKeyEquivalentModifierMask(
-                NSEventModifierFlags::Control | NSEventModifierFlags::Command,
+            apply_menu_item_hotkey(
+                &full_screen_item,
+                &settings.system_fullscreen_hotkey,
+                "system_fullscreen_hotkey",
             );
+            full_screen_item.setAction(Some(sel!(toggleFullScreen:)));
             menu.addItem(&full_screen_item);
 
             let create_new_window = NSMenuItem::new(mtm);
             create_new_window.setTitle(ns_string!("New Window"));
-            create_new_window.setKeyEquivalent(ns_string!("n"));
+            apply_menu_item_hotkey(
+                &create_new_window,
+                &settings.system_new_window_hotkey,
+                "system_new_window_hotkey",
+            );
             create_new_window.setAction(Some(sel!(neovideCreateWindow:)));
             create_new_window.setTarget(Some(&self.new_window_handler));
             menu.addItem(&create_new_window);
@@ -1633,9 +1677,10 @@ impl Menu {
             if should_show_native_tab_bar() {
                 let show_all_tabs_item = NSMenuItem::new(mtm);
                 show_all_tabs_item.setTitle(ns_string!("Editors"));
-                show_all_tabs_item.setKeyEquivalent(ns_string!("e"));
-                show_all_tabs_item.setKeyEquivalentModifierMask(
-                    NSEventModifierFlags::Command | NSEventModifierFlags::Shift,
+                apply_menu_item_hotkey(
+                    &show_all_tabs_item,
+                    &settings.system_show_all_tabs_hotkey,
+                    "system_show_all_tabs_hotkey",
                 );
                 show_all_tabs_item.setAction(Some(sel!(neovideShowAllTabs:)));
                 show_all_tabs_item.setTarget(Some(&self.tab_overview_handler));
@@ -1644,7 +1689,11 @@ impl Menu {
 
             let min_item = NSMenuItem::new(mtm);
             min_item.setTitle(ns_string!("Minimize"));
-            min_item.setKeyEquivalent(ns_string!("m"));
+            apply_menu_item_hotkey(
+                &min_item,
+                &settings.system_minimize_hotkey,
+                "system_minimize_hotkey",
+            );
             min_item.setAction(Some(sel!(performMiniaturize:)));
             menu.addItem(&min_item);
             menu
@@ -1727,14 +1776,15 @@ pub fn trigger_tab_overview() {
 
     if let Some(mtm) = MainThreadMarker::new() {
         let app = NSApplication::sharedApplication(mtm);
+        if let Some(window) = app.keyWindow()
+            && let Some(tab_group) = window.tabGroup()
+            && tab_group.isOverviewVisible()
+        {
+            reset_tab_overview_state();
+            window.toggleTabOverview(None);
+            return;
+        }
         if let Some(window) = app.keyWindow() {
-            if let Some(tab_group) = window.tabGroup() {
-                if tab_group.isOverviewVisible() {
-                    reset_tab_overview_state();
-                    window.toggleTabOverview(None);
-                    return;
-                }
-            }
             MacosWindowFeature::begin_tab_overview(&window);
         }
     }
@@ -1770,8 +1820,10 @@ pub fn register_file_handler() {
         let menu = NSMenu::new(mtm);
         let create_new_window = NSMenuItem::new(mtm);
         create_new_window.setTitle(ns_string!("New Window"));
-        create_new_window.setAction(Some(sel!(neovideCreateWindow:)));
-        create_new_window.setTarget(Some(this));
+        unsafe {
+            create_new_window.setAction(Some(sel!(neovideCreateWindow:)));
+            create_new_window.setTarget(Some(this));
+        }
         menu.addItem(&create_new_window);
         Retained::autorelease_return(menu)
     }

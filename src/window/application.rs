@@ -277,8 +277,7 @@ impl Application {
             return;
         }
 
-        let open_args = (!args.files_to_open.is_empty()).then_some(args);
-        self.window_wrapper.try_create_window(event_loop, &self.proxy, cwd, open_args);
+        self.window_wrapper.try_create_window(event_loop, &self.proxy, cwd, Some(args));
         self.mark_should_render_all();
     }
 
@@ -369,8 +368,8 @@ impl Application {
         self.render_states.values().map(|state| self.get_event_deadline_for(state)).min()
     }
 
-    fn next_control_flow(&self, now: Instant) -> ControlFlow {
-        next_control_flow_for(self.get_event_deadline(), !self.error_windows.is_empty(), now)
+    fn next_control_flow(&self) -> ControlFlow {
+        next_control_flow_for(self.get_event_deadline())
     }
 
     fn schedule_next_event(&mut self, event_loop: &ActiveEventLoop) {
@@ -380,7 +379,7 @@ impl Application {
         if self.create_window_allowed && self.window_wrapper.has_pending_window_creation() {
             self.window_wrapper.try_create_window(event_loop, &self.proxy, None, None);
         }
-        event_loop.set_control_flow(self.next_control_flow(Instant::now()));
+        event_loop.set_control_flow(self.next_control_flow());
     }
 
     fn handle_error_window_event(
@@ -426,10 +425,10 @@ impl Application {
         let num_steps = (dt.as_secs_f64() / MAX_ANIMATION_DT).ceil() as u32;
         let step = dt / num_steps;
         for _ in 0..num_steps {
-            if self.window_wrapper.animate_frame(window_id, step.as_secs_f32()) {
-                if let Some(state) = self.render_states.get_mut(&window_id) {
-                    state.should_render = ShouldRender::Immediately;
-                }
+            if self.window_wrapper.animate_frame(window_id, step.as_secs_f32())
+                && let Some(state) = self.render_states.get_mut(&window_id)
+            {
+                state.should_render = ShouldRender::Immediately;
             }
         }
     }
@@ -601,16 +600,10 @@ impl Application {
                     .map(|state| state.num_consecutive_rendered > 0)
                     .unwrap_or(false);
 
-                if should_cleanup_cache {
-                    if let Some(route) = self.window_wrapper.routes.get(&window_id) {
-                        route
-                            .window
-                            .renderer
-                            .borrow_mut()
-                            .grid_renderer
-                            .shaper
-                            .cleanup_font_cache();
-                    }
+                if should_cleanup_cache
+                    && let Some(route) = self.window_wrapper.routes.get(&window_id)
+                {
+                    route.window.renderer.borrow_mut().grid_renderer.shaper.cleanup_font_cache();
                 }
 
                 if let Some(state) = self.render_states.get_mut(&window_id) {
@@ -694,10 +687,10 @@ impl ApplicationHandler<EventPayload> for Application {
                 }
                 #[cfg(target_os = "macos")]
                 {
-                    if let Some(route) = self.window_wrapper.routes.get(&window_id) {
-                        if let Some(macos_feature) = route.window.macos_feature.as_ref() {
-                            macos_feature.borrow_mut().ensure_app_initialized();
-                        }
+                    if let Some(route) = self.window_wrapper.routes.get(&window_id)
+                        && let Some(macos_feature) = route.window.macos_feature.as_ref()
+                    {
+                        macos_feature.borrow_mut().ensure_app_initialized();
                     }
                 }
             }
@@ -716,7 +709,15 @@ impl ApplicationHandler<EventPayload> for Application {
         match payload {
             UserEvent::ConfigsChanged(config) => self.handle_config_changed(target, *config),
             #[cfg(target_os = "macos")]
-            UserEvent::OpenFiles { files, cwd, caller_cwd, tabs, new_window } => {
+            UserEvent::OpenFiles {
+                files,
+                cwd,
+                caller_cwd,
+                tabs,
+                new_window,
+                neovim_bin,
+                neovim_args,
+            } => {
                 let cwd = cwd.as_deref().map(Path::new);
                 let caller_cwd = caller_cwd.as_deref().map(Path::new);
                 let open_args = OpenArgs {
@@ -725,6 +726,8 @@ impl ApplicationHandler<EventPayload> for Application {
                         .map(|path| resolve_relative_path(&path, caller_cwd))
                         .collect(),
                     tabs,
+                    neovim_bin,
+                    neovim_args,
                 };
 
                 self.prepare_open_files(event_loop, new_window, cwd, open_args);
@@ -816,7 +819,17 @@ impl ApplicationHandler<EventPayload> for Application {
             }
             #[cfg(target_os = "macos")]
             UserEvent::CreateWindow => {
-                self.window_wrapper.try_create_window(event_loop, &self.proxy, None, None);
+                let (cwd, args) = self
+                    .window_wrapper
+                    .focused_route_launch_context()
+                    .map(|(cwd, args)| (cwd, Some(args)))
+                    .unwrap_or((None, None));
+                self.window_wrapper.try_create_window(
+                    event_loop,
+                    &self.proxy,
+                    cwd.as_deref(),
+                    args,
+                );
                 self.sync_render_states();
                 self.mark_should_render_all();
             }
@@ -844,11 +857,11 @@ impl ApplicationHandler<EventPayload> for Application {
                     return;
                 };
                 self.window_wrapper.queue_restart_route(route_id, details);
-                if let Some(window_id) = self.window_wrapper.window_id_for_route(route_id) {
-                    if let Some(state) = self.render_states.get_mut(&window_id) {
-                        state.pending_draw_commands.clear();
-                        state.should_render = ShouldRender::Immediately;
-                    }
+                if let Some(window_id) = self.window_wrapper.window_id_for_route(route_id)
+                    && let Some(state) = self.render_states.get_mut(&window_id)
+                {
+                    state.pending_draw_commands.clear();
+                    state.should_render = ShouldRender::Immediately;
                 }
             }
             payload => {
@@ -894,14 +907,9 @@ impl Drop for Application {
     }
 }
 
-fn next_control_flow_for(
-    deadline: Option<Instant>,
-    has_error_windows: bool,
-    now: Instant,
-) -> ControlFlow {
+fn next_control_flow_for(deadline: Option<Instant>) -> ControlFlow {
     match deadline {
         Some(deadline) => ControlFlow::WaitUntil(deadline),
-        None if has_error_windows => ControlFlow::Wait,
-        None => ControlFlow::WaitUntil(now),
+        None => ControlFlow::Wait,
     }
 }

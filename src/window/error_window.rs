@@ -112,16 +112,16 @@ impl ApplicationHandler<EventPayload> for ErrorWindow<'_> {
     }
 
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
-        if self.state.is_none() {
-            if let Some(clipboard) = self.clipboard.as_ref() {
-                let window_config = create_error_window(event_loop, &self.settings);
-                self.state = Some(State::new(
-                    self.message,
-                    window_config,
-                    self.settings.clone(),
-                    ClipboardHandle::new(clipboard),
-                ));
-            }
+        if self.state.is_none()
+            && let Some(clipboard) = self.clipboard.as_ref()
+        {
+            let window_config = create_error_window(event_loop, &self.settings);
+            self.state = Some(State::new(
+                self.message,
+                window_config,
+                self.settings.clone(),
+                ClipboardHandle::new(clipboard),
+            ));
         }
     }
 
@@ -188,10 +188,10 @@ impl State {
                 self.paragraphs =
                     create_paragraphs(message, scale_factor as f32, &self.font_collection);
             }
-            WindowEvent::KeyboardInput { event, is_synthetic: false, .. } => {
-                if self.handle_keyboard_input(event, message) {
-                    self.skia_renderer.window().request_redraw();
-                }
+            WindowEvent::KeyboardInput { event, is_synthetic: false, .. }
+                if self.handle_keyboard_input(&event, message) =>
+            {
+                self.skia_renderer.window().request_redraw();
             }
             WindowEvent::MouseWheel { delta: MouseScrollDelta::LineDelta(_, y), .. } => {
                 self.mouse_scroll_accumulator += y * 3.0;
@@ -231,7 +231,7 @@ impl State {
         self.skia_renderer.swap_buffers();
     }
 
-    fn handle_keyboard_input(&mut self, event: KeyEvent, message: &str) -> bool {
+    fn handle_keyboard_input(&mut self, event: &KeyEvent, message: &str) -> bool {
         if event.state != ElementState::Pressed {
             return false;
         }
@@ -265,10 +265,10 @@ impl State {
                         true
                     }
                     "y" => {
-                        if let Some(handle) = self.clipboard.upgrade() {
-                            if let Ok(mut clipboard) = handle.lock() {
-                                let _ = clipboard.set_contents(message.to_string(), "+");
-                            }
+                        if let Some(handle) = self.clipboard.upgrade()
+                            && let Ok(mut clipboard) = handle.lock()
+                        {
+                            let _ = clipboard.set_contents(message.to_string(), "+");
                         }
                         true
                     }
@@ -300,7 +300,7 @@ impl State {
             return true;
         }
 
-        match event.logical_key {
+        match &event.logical_key {
             // NOTE: These work regardless of the ctrl state, mimicking "less"
             Key::Character(c) => match c.as_str() {
                 "k" => self.scroll_line(-1),

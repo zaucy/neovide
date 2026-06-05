@@ -114,6 +114,11 @@ pub enum WindowCommand {
         column: u64,
         text: Option<String>,
     },
+    #[cfg(target_os = "macos")]
+    DocumentStateChanged {
+        path: String,
+        modified: bool,
+    },
     Minimize,
     ThemeChanged(Option<Theme>),
     #[cfg(windows)]
@@ -139,6 +144,8 @@ pub enum UserEvent {
         caller_cwd: Option<String>,
         tabs: bool,
         new_window: bool,
+        neovim_bin: Option<String>,
+        neovim_args: Option<Vec<String>>,
     },
     WindowCommand(WindowCommand),
     SettingsChanged(SettingsChanged),

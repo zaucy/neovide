@@ -75,22 +75,20 @@ impl FloatingLayer<'_> {
         root_canvas.save();
         root_canvas.clip_path(&draw_clip, None, Some(false));
         let need_blur = has_transparency || settings.floating_blur;
-        if need_blur {
-            if let Some(blur) = blur(
+        if need_blur
+            && let Some(blur) = blur(
                 (settings.floating_blur_amount_x, settings.floating_blur_amount_y),
                 None,
                 None,
                 None,
-            ) {
-                let paint = Paint::default()
-                    .set_anti_alias(false)
-                    .set_blend_mode(BlendMode::Src)
-                    .to_owned();
-                let save_layer_rec =
-                    SaveLayerRec::default().backdrop(&blur).bounds(&draw_bound_rect).paint(&paint);
-                root_canvas.save_layer(&save_layer_rec);
-                root_canvas.restore();
-            }
+            )
+        {
+            let paint =
+                Paint::default().set_anti_alias(false).set_blend_mode(BlendMode::Src).to_owned();
+            let save_layer_rec =
+                SaveLayerRec::default().backdrop(&blur).bounds(&draw_bound_rect).paint(&paint);
+            root_canvas.save_layer(&save_layer_rec);
+            root_canvas.restore();
         }
 
         let paint =
@@ -211,7 +209,7 @@ pub fn group_windows(
     for i in 0..windows.len() {
         let _ = get_window_group(&mut windows, i);
     }
-    windows.sort_by(|a, b| a.group.cmp(&b.group));
+    windows.sort_by_key(|a| a.group);
     windows
         .into_iter()
         .chunk_by(|window| window.group)

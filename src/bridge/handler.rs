@@ -73,6 +73,7 @@ where
 struct NeovimState {
     nvim: Option<Neovim<NeovimWriter>>,
     can_support_ime_api: bool,
+    pre_attach_cmdheight: Option<Value>,
 }
 
 #[derive(Clone)]
@@ -151,6 +152,20 @@ impl NeovimHandler {
 
     pub fn mark_ui_command_started(&self) -> bool {
         self.ui_command_started.swap(true, Ordering::SeqCst)
+    }
+
+    pub fn set_pre_attach_cmdheight(&self, cmdheight: Value) {
+        if let Ok(mut guard) = self.current_neovim.write() {
+            guard.pre_attach_cmdheight = Some(cmdheight);
+        }
+    }
+
+    pub fn pre_attach_cmdheight(&self) -> Option<Value> {
+        self.current_neovim.read().ok().and_then(|guard| guard.pre_attach_cmdheight.clone())
+    }
+
+    pub fn send_redraw_event(&self, event: RedrawEvent) {
+        let _ = self.redraw_event_sender.send(event);
     }
 }
 
@@ -247,6 +262,18 @@ impl Handler for NeovimHandler {
                 self.send_window_command(WindowCommand::FocusWindow);
             }
             #[cfg(target_os = "macos")]
+            "neovide.document_state" => match parse_document_state_args(&arguments) {
+                Some((path, modified)) => {
+                    self.send_window_command(WindowCommand::DocumentStateChanged {
+                        path,
+                        modified,
+                    });
+                }
+                None => {
+                    warn!("neovide.document_state called with invalid arguments: {arguments:?}")
+                }
+            },
+            #[cfg(target_os = "macos")]
             "neovide.force_click" => match parse_force_click_args(&arguments) {
                 Some((col, row, entity, guifont, kind)) => {
                     self.send_window_command(WindowCommand::TouchpadPressure {
@@ -269,12 +296,12 @@ impl Handler for NeovimHandler {
                 }
             }
             "neovide.intro_banner_allowed" => {
-                if let Some(value) = arguments.first() {
-                    if let Some(allowed) = value.as_bool() {
-                        let _ = self
-                            .redraw_event_sender
-                            .send(RedrawEvent::NeovideIntroBannerAllowed(allowed));
-                    }
+                if let Some(value) = arguments.first()
+                    && let Some(allowed) = value.as_bool()
+                {
+                    let _ = self
+                        .redraw_event_sender
+                        .send(RedrawEvent::NeovideIntroBannerAllowed(allowed));
                 }
             }
             "neovide.progress_bar" => {
@@ -316,6 +343,15 @@ fn parse_force_click_args(
     let kind = ForceClickKind::from(kind_str);
 
     Some((col, row, entity, guifont, kind))
+}
+
+#[cfg(target_os = "macos")]
+fn parse_document_state_args(arguments: &[Value]) -> Option<(String, bool)> {
+    let [path, modified, ..] = arguments else {
+        return None;
+    };
+
+    Some((path.as_str().unwrap_or("").to_string(), modified.as_bool().unwrap_or(false)))
 }
 
 async fn skip_default_guifont(

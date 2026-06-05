@@ -3,7 +3,10 @@
 use std::{env, fs, sync::mpsc, time::Duration};
 
 use notify_debouncer_full::{new_debouncer, notify::RecursiveMode};
-use serde::Deserialize;
+use serde::{
+    Deserialize, Deserializer,
+    de::{Error as DeError, Unexpected},
+};
 use winit::event_loop::EventLoopProxy;
 
 use crate::{
@@ -45,6 +48,27 @@ pub fn config_path() -> PathBuf {
         })
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+enum HotkeyConfigValue {
+    String(String),
+    Bool(bool),
+}
+
+fn deserialize_optional_hotkey<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    match Option::<HotkeyConfigValue>::deserialize(deserializer)? {
+        None => Ok(None),
+        Some(HotkeyConfigValue::String(value)) => Ok(Some(value)),
+        Some(HotkeyConfigValue::Bool(false)) => Ok(Some("false".to_string())),
+        Some(HotkeyConfigValue::Bool(true)) => {
+            Err(D::Error::invalid_value(Unexpected::Bool(true), &"a shortcut string or false"))
+        }
+    }
+}
+
 #[derive(Debug, Deserialize, Default, Clone)]
 #[serde(rename_all = "kebab-case")]
 pub struct Config {
@@ -67,9 +91,27 @@ pub struct Config {
     pub vsync: Option<bool>,
     pub wsl: Option<bool>,
     pub backtraces_path: Option<PathBuf>,
+    #[serde(default, deserialize_with = "deserialize_optional_hotkey")]
     pub system_pinned_hotkey: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_optional_hotkey")]
     pub system_switcher_hotkey: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_optional_hotkey")]
+    pub system_new_window_hotkey: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_optional_hotkey")]
+    pub system_hide_hotkey: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_optional_hotkey")]
+    pub system_hide_others_hotkey: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_optional_hotkey")]
+    pub system_quit_hotkey: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_optional_hotkey")]
+    pub system_minimize_hotkey: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_optional_hotkey")]
+    pub system_fullscreen_hotkey: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_optional_hotkey")]
+    pub system_show_all_tabs_hotkey: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_optional_hotkey")]
     pub system_tab_prev_hotkey: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_optional_hotkey")]
     pub system_tab_next_hotkey: Option<String>,
     pub icon: Option<String>,
     pub chdir: Option<PathBuf>,
@@ -123,82 +165,103 @@ impl Config {
 
     fn write_to_env(&self) {
         if let Some(server) = &self.server {
-            env::set_var("NEOVIDE_SERVER", server);
+            unsafe { env::set_var("NEOVIDE_SERVER", server) };
         }
         if let Some(wsl) = self.wsl {
-            env::set_var("NEOVIDE_WSL", wsl.to_string());
+            unsafe { env::set_var("NEOVIDE_WSL", wsl.to_string()) };
         }
         if let Some(no_multigrid) = self.no_multigrid {
-            env::set_var("NEOVIDE_NO_MULTIGRID", no_multigrid.to_string());
+            unsafe { env::set_var("NEOVIDE_NO_MULTIGRID", no_multigrid.to_string()) };
         }
         if let Some(maximized) = self.maximized {
-            env::set_var("NEOVIDE_MAXIMIZED", maximized.to_string());
+            unsafe { env::set_var("NEOVIDE_MAXIMIZED", maximized.to_string()) };
         }
         if let Some(vsync) = self.vsync {
-            env::set_var("NEOVIDE_VSYNC", vsync.to_string());
+            unsafe { env::set_var("NEOVIDE_VSYNC", vsync.to_string()) };
         }
         if let Some(srgb) = self.srgb {
-            env::set_var("NEOVIDE_SRGB", srgb.to_string());
+            unsafe { env::set_var("NEOVIDE_SRGB", srgb.to_string()) };
         }
         if let Some(fork) = self.fork {
-            env::set_var("NEOVIDE_FORK", fork.to_string());
+            unsafe { env::set_var("NEOVIDE_FORK", fork.to_string()) };
         }
         if let Some(opengl) = self.opengl {
-            env::set_var("NEOVIDE_OPENGL", opengl.to_string());
+            unsafe { env::set_var("NEOVIDE_OPENGL", opengl.to_string()) };
         }
         if let Some(idle) = self.idle {
-            env::set_var("NEOVIDE_IDLE", idle.to_string());
+            unsafe { env::set_var("NEOVIDE_IDLE", idle.to_string()) };
         }
         if let Some(frame) = self.frame {
-            env::set_var("NEOVIDE_FRAME", frame.to_string());
+            unsafe { env::set_var("NEOVIDE_FRAME", frame.to_string()) };
         }
         if let Some(size) = &self.size {
-            env::set_var("NEOVIDE_SIZE", size);
+            unsafe { env::set_var("NEOVIDE_SIZE", size) };
         }
         if let Some(grid) = &self.grid {
-            env::set_var("NEOVIDE_GRID", grid);
+            unsafe { env::set_var("NEOVIDE_GRID", grid) };
         }
         if let Some(neovim_bin) = &self.neovim_bin {
-            env::set_var("NEOVIM_BIN", neovim_bin.to_string_lossy().to_string());
+            unsafe { env::set_var("NEOVIM_BIN", neovim_bin.to_string_lossy().to_string()) };
         }
         if let Some(mouse_cursor_icon) = &self.mouse_cursor_icon {
-            env::set_var("NEOVIDE_MOUSE_CURSOR_ICON", mouse_cursor_icon);
+            unsafe { env::set_var("NEOVIDE_MOUSE_CURSOR_ICON", mouse_cursor_icon) };
         }
         if let Some(title_hidden) = &self.title_hidden {
-            env::set_var("NEOVIDE_TITLE_HIDDEN", title_hidden.to_string());
+            unsafe { env::set_var("NEOVIDE_TITLE_HIDDEN", title_hidden.to_string()) };
         }
         if let Some(tabs) = &self.tabs {
-            env::set_var("NEOVIDE_TABS", tabs.to_string());
+            unsafe { env::set_var("NEOVIDE_TABS", tabs.to_string()) };
         }
         if let Some(system_native_tabs) = &self.system_native_tabs {
-            env::set_var("NEOVIDE_SYSTEM_NATIVE_TABS", system_native_tabs.to_string());
+            unsafe { env::set_var("NEOVIDE_SYSTEM_NATIVE_TABS", system_native_tabs.to_string()) };
         }
         if let Some(pinned_hotkey) = &self.system_pinned_hotkey {
-            env::set_var("NEOVIDE_SYSTEM_PINNED_HOTKEY", pinned_hotkey);
+            unsafe { env::set_var("NEOVIDE_SYSTEM_PINNED_HOTKEY", pinned_hotkey) };
         }
         if let Some(switcher_hotkey) = &self.system_switcher_hotkey {
-            env::set_var("NEOVIDE_SYSTEM_SWITCHER_HOTKEY", switcher_hotkey);
+            unsafe { env::set_var("NEOVIDE_SYSTEM_SWITCHER_HOTKEY", switcher_hotkey) };
+        }
+        if let Some(new_window_hotkey) = &self.system_new_window_hotkey {
+            unsafe { env::set_var("NEOVIDE_SYSTEM_NEW_WINDOW_HOTKEY", new_window_hotkey) };
+        }
+        if let Some(hide_hotkey) = &self.system_hide_hotkey {
+            unsafe { env::set_var("NEOVIDE_SYSTEM_HIDE_HOTKEY", hide_hotkey) };
+        }
+        if let Some(hide_others_hotkey) = &self.system_hide_others_hotkey {
+            unsafe { env::set_var("NEOVIDE_SYSTEM_HIDE_OTHERS_HOTKEY", hide_others_hotkey) };
+        }
+        if let Some(quit_hotkey) = &self.system_quit_hotkey {
+            unsafe { env::set_var("NEOVIDE_SYSTEM_QUIT_HOTKEY", quit_hotkey) };
+        }
+        if let Some(minimize_hotkey) = &self.system_minimize_hotkey {
+            unsafe { env::set_var("NEOVIDE_SYSTEM_MINIMIZE_HOTKEY", minimize_hotkey) };
+        }
+        if let Some(fullscreen_hotkey) = &self.system_fullscreen_hotkey {
+            unsafe { env::set_var("NEOVIDE_SYSTEM_FULLSCREEN_HOTKEY", fullscreen_hotkey) };
+        }
+        if let Some(show_all_tabs_hotkey) = &self.system_show_all_tabs_hotkey {
+            unsafe { env::set_var("NEOVIDE_SYSTEM_SHOW_ALL_TABS_HOTKEY", show_all_tabs_hotkey) };
         }
         if let Some(tab_prev_hotkey) = &self.system_tab_prev_hotkey {
-            env::set_var("NEOVIDE_SYSTEM_TAB_PREV_HOTKEY", tab_prev_hotkey);
+            unsafe { env::set_var("NEOVIDE_SYSTEM_TAB_PREV_HOTKEY", tab_prev_hotkey) };
         }
         if let Some(tab_next_hotkey) = &self.system_tab_next_hotkey {
-            env::set_var("NEOVIDE_SYSTEM_TAB_NEXT_HOTKEY", tab_next_hotkey);
+            unsafe { env::set_var("NEOVIDE_SYSTEM_TAB_NEXT_HOTKEY", tab_next_hotkey) };
         }
         if let Some(icon) = &self.icon {
-            env::set_var("NEOVIDE_ICON", icon);
+            unsafe { env::set_var("NEOVIDE_ICON", icon) };
         }
         if let Some(wayland_app_id) = &self.wayland_app_id {
-            env::set_var("NEOVIDE_APP_ID", wayland_app_id);
+            unsafe { env::set_var("NEOVIDE_APP_ID", wayland_app_id) };
         }
         if let Some(x11_wm_class) = &self.x11_wm_class {
-            env::set_var("NEOVIDE_WM_CLASS", x11_wm_class);
+            unsafe { env::set_var("NEOVIDE_WM_CLASS", x11_wm_class) };
         }
         if let Some(x11_wm_class_instance) = &self.x11_wm_class_instance {
-            env::set_var("NEOVIDE_WM_CLASS_INSTANCE", x11_wm_class_instance);
+            unsafe { env::set_var("NEOVIDE_WM_CLASS_INSTANCE", x11_wm_class_instance) };
         }
         if let Some(chdir) = &self.chdir {
-            env::set_var("NEOVIDE_CHDIR", chdir.to_string_lossy().to_string());
+            unsafe { env::set_var("NEOVIDE_CHDIR", chdir.to_string_lossy().to_string()) };
         }
     }
 
