@@ -118,7 +118,7 @@ impl ApiParameterType {
             Some("Float") => ApiParameterType::Float,
             Some("String") => ApiParameterType::String,
             Some("Array") => ApiParameterType::Array,
-            Some("Dictionary") => ApiParameterType::Dictionary,
+            Some("Dictionary") | Some("Dict") => ApiParameterType::Dictionary,
             Some("Object") => ApiParameterType::Object,
             Some("Buffer") => ApiParameterType::Buffer,
             Some("Window") => ApiParameterType::Window,
@@ -274,7 +274,6 @@ fn parse_function(value: ValueRef) -> std::result::Result<ApiFunction, ApiInfoPa
             Some("method") => method = Some(v.try_into()?),
             Some("since") => since = Some(v.try_into()?),
             Some("deprecated_since") => deprecated_since = Some(v.try_into()?),
-            Some(key) => return Err(key.into()),
             _ => {}
         }
     }
@@ -304,7 +303,8 @@ fn parse_parameter_type(
 
 fn parse_parameter(value: ValueRef) -> std::result::Result<ApiParameter, ApiInfoParseError> {
     let info: Vec<ValueRef> = value.try_into()?;
-    if let Some((t, n)) = info.into_iter().collect_tuple() {
+    let mut iter = info.into_iter();
+    if let (Some(t), Some(n)) = (iter.next(), iter.next()) {
         let name: Utf8StringRef = n.try_into()?;
         let name = name.as_str();
         let parameter_type = parse_parameter_type(t)?;
@@ -349,7 +349,6 @@ fn parse_ui_event(value: ValueRef) -> std::result::Result<ApiEvent, ApiInfoParse
             }
             Some("parameters") => parameters = Some(parse_parameters(v)?),
             Some("since") => since = Some(v.try_into()?),
-            Some(key) => return Err(key.into()),
             _ => {}
         }
     }
@@ -457,4 +456,19 @@ fn version_match_prerelease() {
     // But not these
     assert!(!version.has_version(1, 12, 1, Some(0)));
     assert!(!version.has_version(1, 12, 0, Some(1254)));
+}
+
+#[test]
+fn parameter_parsing_test() {
+    // 2-element parameter format [type, name]
+    let param_2 = Value::Array(vec![Value::from("String"), Value::from("my_param")]);
+    let parsed_2 = parse_parameter(param_2.as_ref()).unwrap();
+    assert_eq!(parsed_2.name, "my_param");
+    assert!(matches!(parsed_2.parameter_type, ApiParameterType::String));
+
+    // 3-element parameter format [type, name, optional]
+    let param_3 = Value::Array(vec![Value::from("Dict"), Value::from("opts"), Value::from(true)]);
+    let parsed_3 = parse_parameter(param_3.as_ref()).unwrap();
+    assert_eq!(parsed_3.name, "opts");
+    assert!(matches!(parsed_3.parameter_type, ApiParameterType::Dictionary));
 }
